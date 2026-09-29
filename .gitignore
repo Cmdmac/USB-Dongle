@@ -67,3 +67,32 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# ============================================================
+#  以下为本项目（ESP32 USB-Dongle）追加
+# ============================================================
+
+# ---------- Arduino / arduino-cli ----------
+# arduino-cli compile --output-dir .build 的产物
+.build/
+# arduino-cli 自己的编译缓存（在 sketch 目录下）
+build/
+
+# ---------- ESP-IDF ----------
+sdkconfig
+sdkconfig.old
+managed_components/
+dependencies.lock
+
+# ---------- Node（esp-build-tool 是零依赖，理论上不该有）----------
+node_modules/
+
+# ---------- Python（esp-build-tool/tools/serial-monitor.py）----------
+__pycache__/
+*.pyc
+
+# ---------- macOS ----------
+.DS_Store
+
+# ---------- WorkBuddy 会话数据（AI 工作记录，不入库）----------
+.workbuddy/

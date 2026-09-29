@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ESP 构建刷写工具</title>
+<style>
+  *{box-sizing:border-box}
+  body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+       margin:0;padding:18px;background:#f4f5f7;color:#1f2328;font-size:14px}
+  .wrap{max-width:1000px;margin:0 auto}
+  h1{font-size:20px;margin:0 0 6px}
+  .env{font-size:12px;color:#6b7280;line-height:1.9;margin-bottom:14px}
+  .env code{background:#e8eaee;padding:1px 5px;border-radius:4px;font-size:11px}
+  .ok{color:#15803d}.bad{color:#b91c1c}
+  .card{background:#fff;border-radius:12px;padding:16px;margin-bottom:14px;
+        box-shadow:0 1px 3px rgba(0,0,0,.07)}
+  .row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+  .row:last-child{margin-bottom:0}
+  label{font-size:12px;color:#6b7280;min-width:38px}
+  select,input{padding:8px 10px;border:1px solid #d5d9e0;border-radius:8px;font-size:14px;
+               background:#fff;font-family:inherit}
+  select{min-width:190px}
+  input{width:190px}
+  button{padding:9px 16px;border:0;border-radius:8px;background:#2b6cff;color:#fff;
+         font-size:14px;cursor:pointer;font-family:inherit}
+  button.sec{background:#e9ecf1;color:#333}
+  button.danger{background:#e05252}
+  button.sm{padding:5px 11px;font-size:12px}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .badge{font-size:11px;padding:3px 9px;border-radius:10px;background:#eef;color:#335}
+  .badge.arduino{background:#e6f2ff;color:#1d4ed8}
+  .badge.idf{background:#f0e9ff;color:#6d28d9}
+  .muted{color:#8a919c;font-size:12px}
+  #log{background:#12151a;color:#cdd6e0;border-radius:8px;padding:12px;margin:10px 0 0;
+       height:420px;min-height:160px;max-height:80vh;resize:vertical;
+       overflow:auto;white-space:pre-wrap;word-break:break-all;
+       font:12px/1.55 Menlo,Consolas,monospace}
+  #log .err{color:#ff7b72}
+  #log .sys{color:#79c0ff}
+  #log .ok{color:#7ee787}
+  #log .out{color:#cdd6e0}
+  .chk{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:#6b7280;
+       cursor:pointer;user-select:none}
+  .chk input{width:auto;padding:0;margin:0}
+  .between{display:flex;justify-content:space-between;align-items:center}
+  .fwrow{padding:7px 0;border-bottom:1px solid #f0f1f4;font-size:13px;
+         display:flex;justify-content:space-between;align-items:center}
+  .fwrow:last-child{border-bottom:0}
+  .fwrow a{color:#2b6cff;text-decoration:none;font-family:Menlo,monospace;font-size:12px}
+  .fwrow a:hover{text-decoration:underline}
+  .tip{font-size:12px;color:#8a919c;line-height:1.7;margin-top:8px}
+</style>
+</head>
+<body><div class="wrap">
+
+  <h1>ESP 构建刷写工具</h1>
+  <div class="env" id="env">加载中...</div>
+
+  <!-- 工程与操作 -->
+  <div class="card">
+    <div class="row">
+      <label>工程</label>
+      <select id="project" onchange="onProject()"></select>
+      <span class="badge" id="ptype">-</span>
+      <span class="muted" id="pdetail"></span>
+      <button class="sec sm" onclick="loadProjects()">重新扫描</button>
+      <button class="sec sm" onclick="openDir()">打开目录</button>
+    </div>
+
+    <div class="row">
+      <label>串口</label>
+      <select id="port"></select>
+      <button class="sec sm" onclick="loadPorts()">刷新</button>
+      <label style="min-width:52px">波特率</label>
+      <input id="baud" value="115200" style="width:96px">
+    </div>
+
+    <div class="row" id="fqbnRow">
+      <label>FQBN</label>
+      <input id="fqbn" style="width:300px" onchange="saveFqbn()">
+      <span class="muted">如 esp32:esp32:esp32c3 / esp32:esp32:esp32c2</span>
+    </div>
+
+    <div class="row">
+      <button id="bBuild"  onclick="run('build')">编译</button>
+      <button id="bFlash"  onclick="run('flash')">编译并烧录</button>
+      <button id="bUpload" onclick="run('upload')">仅烧录已有固件</button>
+      <button class="sec" id="bErase" onclick="run('erase')">擦除 Flash</button>
+      <button class="sec" id="bMon"   onclick="monitor()">串口监视</button>
+      <button class="danger" id="bStop" onclick="stop()" disabled>停止</button>
+      <label class="chk" title="开启后编译打印完整命令行（arduino-cli --verbose / idf.py -v）">
+        <input type="checkbox" id="verbose" checked onchange="saveVerbose()">详细日志
+      </label>
+    </div>
+
+    <div class="tip">
+      编译与烧录的实时输出显示在下方。点「停止」会结束当前命令（串口监视也用它结束）。<br>
+      「详细日志」默认开启：编译时显示每一条完整编译命令（arduino-cli <code>--verbose</code> / idf.py <code>-v</code>）。
+      关掉后只显示 <code>[n/N]</code> 进度摘要，日志量小很多。
+    </div>
+  </div>
+
+  <!-- 输出 -->
+  <div class="card">
+    <div class="between">
+      <b>输出</b>
+      <span>
+        <button class="sec sm" onclick="toggleScroll()" id="scrollBtn">自动滚动：开</button>
+        <button class="sec sm" onclick="clearLog()">清空</button>
+      </span>
+    </div>
+    <pre id="log"></pre>
+  </div>
+
+  <!-- 固件产物 -->
+  <div class="card">
+    <div class="between">
+      <b>固件产物</b>
+      <button class="sec sm" onclick="loadFirmware()">刷新</button>
+    </div>
+    <div id="fw"><div class="muted" style="margin-top:8px">编译后这里会列出 .bin 文件</div></div>
+  </div>
+
+</div>
+<script>
+var $ = function (id) { return document.getElementById(id); };
+var PROJECTS = [];
+var es = null;
+var busy = false;
+var autoScroll = true;
+
+var OP_LABEL = {
+  build: '编译', flash: '编译并烧录', upload: '仅烧录已有固件', erase: '擦除 Flash'
+};
+
+// ---------- 基础 ----------
+async function api(p) {
+  var r = await fetch(p);
+  return r.json();
+}
+
+// 详细日志一开，输出量会非常大（几十 MB / 十万行量级）。
+// 逐条 createElement + appendChild 会把页面卡死，所以：
+//   1) 先攒进缓冲区，定时批量刷（用 setTimeout 而非 rAF：后台标签页里 rAF 会停）
+//   2) 同一批里连续同色的文本合并成一个 span
+// 不做任何截断——用户要的就是"全部日志"。
+var logBuf = [];
+var logTimer = 0;
+
+function scheduleFlush() {
+  if (logTimer) return;
+  // 缓冲区太大就先放出去，避免占内存（也顺手压住后台标签页的节流）
+  if (logBuf.length > 4000) { flushLog(); return; }
+  logTimer = setTimeout(flushLog, 60);
+}
+
+function logLine(cls, text) {
+  logBuf.push([cls || '', text]);
+  scheduleFlush();
+}
+
+function flushLog() {
+  if (logTimer) { clearTimeout(logTimer); logTimer = 0; }
+  if (!logBuf.length) return;
+  var el = $('log');
+  var near = el.scrollTop + el.clientHeight >= el.scrollHeight - 40;
+  var frag = document.createDocumentFragment();
+  var curCls = null, curText = '';
+  function emit() {
+    if (curText === '') return;
+    var span = document.createElement('span');
+    if (curCls) span.className = curCls;
+    span.textContent = curText;
+    frag.appendChild(span);
+    curText = '';
+  }
+  for (var i = 0; i < logBuf.length; i++) {
+    var cls = logBuf[i][0], t = String(logBuf[i][1]);
+    if (!t.endsWith('\n')) t += '\n';
+    if (cls !== curCls) { emit(); curCls = cls; }
+    curText += t;
+  }
+  emit();
+  logBuf.length = 0;
+  el.appendChild(frag);
+  if (autoScroll && near) el.scrollTop = el.scrollHeight;
+}
+
+function clearLog() {
+  logBuf.length = 0;
+  if (logTimer) { clearTimeout(logTimer); logTimer = 0; }
+  $('log').textContent = '';
+}
+function toggleScroll() {
+  autoScroll = !autoScroll;
+  $('scrollBtn').textContent = '自动滚动：' + (autoScroll ? '开' : '关');
+  if (autoScroll) { var el = $('log'); el.scrollTop = el.scrollHeight; }
+}
+
+// ---------- 环境 / 工程 / 串口 ----------
+async function loadEnv() {
+  try {
+    var e = await api('/api/env');
+    var a = e.arduinoCli
+      ? '<span class="ok">✓</span> arduino-cli ' + (e.arduinoCliVersion || '')
+        + ' <code>' + e.arduinoCli + '</code>'
+      : '<span class="bad">✗</span> 未找到 arduino-cli';
+    var i = e.idfDir
+      ? '<span class="ok">✓</span> ESP-IDF ' + (e.idfVersion || '') + ' <code>' + e.idfDir + '</code>'
+      : '<span class="bad">✗</span> 未找到 ESP-IDF（设置环境变量 IDF_PATH）';
+    $('env').innerHTML = '工作区 <code>' + e.workspace + '</code><br>' + a + '<br>' + i;
+  } catch (err) {
+    $('env').innerHTML = '<span class="bad">无法读取环境信息</span>';
+  }
+}
+
+async function loadProjects() {
+  var r = await api('/api/projects');
+  PROJECTS = r.projects || [];
+  var sel = $('project');
+  var keep = localStorage.getItem('project');
+  sel.innerHTML = '';
+  if (!PROJECTS.length) {
+    sel.innerHTML = '<option value="">（同级目录下没找到工程）</option>';
+    return;
+  }
+  PROJECTS.forEach(function (p) {
+    var o = document.createElement('option');
+    o.value = p.name;
+    o.textContent = p.name + '  [' + p.type + ']';
+    sel.appendChild(o);
+  });
+  if (keep && PROJECTS.some(function (p) { return p.name === keep; })) sel.value = keep;
+  onProject();
+}
+
+async function loadPorts() {
+  var r = await api('/api/ports');
+  var sel = $('port');
+  var keep = sel.value || localStorage.getItem('port');
+  sel.innerHTML = '';
+  var ports = r.ports || [];
+  if (!ports.length) {
+    sel.innerHTML = '<option value="">（未发现串口）</option>';
+  } else {
+    ports.forEach(function (p) {
+      var o = document.createElement('option');
+      o.value = p; o.textContent = p;
+      sel.appendChild(o);
+    });
+    if (keep && ports.indexOf(keep) >= 0) sel.value = keep;
+    localStorage.setItem('port', sel.value);
+  }
+  sel.onchange = function () { localStorage.setItem('port', sel.value); };
+}
+
+function onProject() {
+  var name = $('project').value;
+  var p = PROJECTS.find(function (x) { return x.name === name; });
+  if (!p) return;
+  $('ptype').textContent = p.type;
+  $('ptype').className = 'badge ' + p.type;
+  $('pdetail').textContent = p.detail || '';
+
+  if (p.type === 'arduino') {
+    $('fqbnRow').style.display = '';
+    $('fqbn').value = localStorage.getItem('fqbn:' + name) || p.fqbn || '';
+  } else {
+    $('fqbnRow').style.display = 'none';   // IDF 的目标芯片由 sdkconfig 决定
+  }
+  localStorage.setItem('project', name);
+  syncVerbose(p);
+  loadFirmware();
+}
+
+// ---------- 详细日志开关 ----------
+// 默认开启。用户手动拨过就以本地记忆为准（'0'/'1'），
+// 没拨过则跟随工程 build.json 的 verbose 设置（缺省即为开）。
+function syncVerbose(p) {
+  var pref = localStorage.getItem('verbose');
+  if (pref === '0' || pref === '1') {
+    $('verbose').checked = (pref === '1');
+  } else {
+    $('verbose').checked = !p || p.verbose !== false;
+  }
+}
+
+function saveVerbose() {
+  localStorage.setItem('verbose', $('verbose').checked ? '1' : '0');
+}
+
+function verboseParam() {
+  return $('verbose').checked ? '1' : '0';
+}
+
+function saveFqbn() {
+  var name = $('project').value;
+  if (name) localStorage.setItem('fqbn:' + name, $('fqbn').value);
+}
+
+// ---------- 产物 ----------
+async function loadFirmware() {
+  var name = $('project').value;
+  var box = $('fw');
+  if (!name) { box.innerHTML = '<div class="muted">未选择工程</div>'; return; }
+  try {
+    var r = await api('/api/firmware?project=' + encodeURIComponent(name));
+    renderFirmware(r.files || []);
+  } catch (e) {
+    box.innerHTML = '<div class="muted">读取失败</div>';
+  }
+}
+
+function renderFirmware(files) {
+  var box = $('fw');
+  box.innerHTML = '';
+  if (!files || !files.length) {
+    box.innerHTML = '<div class="muted" style="margin-top:8px">暂无产物，先编译一次</div>';
+    return;
+  }
+  var name = $('project').value;
+  files.forEach(function (f) {
+    var row = document.createElement('div');
+    row.className = 'fwrow';
+    var left = document.createElement('span');
+    var a = document.createElement('a');
+    a.href = '/api/download?project=' + encodeURIComponent(name)
+           + '&file=' + encodeURIComponent(f.name);
+    a.textContent = f.name;
+    left.appendChild(a);
+    var right = document.createElement('span');
+    right.className = 'muted';
+    right.textContent = (f.size / 1024).toFixed(1) + ' KB';
+    row.appendChild(left);
+    row.appendChild(right);
+    box.appendChild(row);
+  });
+}
+
+// ---------- 流式执行 ----------
+function setBusy(b) {
+  busy = b;
+  ['bBuild', 'bFlash', 'bUpload', 'bErase', 'bMon'].forEach(function (id) {
+    $(id).disabled = b;
+  });
+  $('bStop').disabled = !b;
+}
+
+function closeStream() {
+  if (es) { es.close(); es = null; }
+  setBusy(false);
+}
+
+function stop() {
+  if (es) { es.close(); es = null; }
+  logLine('sys', '■ 已停止（服务端会结束对应进程）');
+  setBusy(false);
+}
+
+function startStream(url, label) {
+  setBusy(true);
+  logLine('sys', '▶ ' + label);
+  es = new EventSource(url);
+
+  es.addEventListener('start', function (e) {
+    var d = JSON.parse(e.data);
+    logLine('sys', '[命令] ' + d.cmd + ' ' + (d.args || []).join(' '));
+  });
+  es.addEventListener('sys', function (e) { logLine('sys', JSON.parse(e.data)); });
+  es.addEventListener('out', function (e) { logLine('out', JSON.parse(e.data)); });
+  es.addEventListener('err', function (e) { logLine('err', JSON.parse(e.data)); });
+  es.addEventListener('firmware', function (e) {
+    renderFirmware(JSON.parse(e.data).files || []);
+  });
+  es.addEventListener('done', function (e) {
+    var d = JSON.parse(e.data);
+    if (d.code === 0) logLine('ok', '✔ 完成');
+    else logLine('err', '✘ 失败（退出码 ' + d.code + '）');
+    closeStream();
+    loadFirmware();
+  });
+  // EventSource 自带重连；只在仍处于 busy 时提示，避免 done 之后的误报
+  es.onerror = function () {
+    if (busy) { logLine('err', '连接中断'); closeStream(); }
+  };
+}
+
+function run(op) {
+  if (busy) return;
+  var project = $('project').value;
+  if (!project) { alert('请先选择一个工程'); return; }
+  var port = $('port').value;
+  if ((op === 'flash' || op === 'upload' || op === 'erase') && !port) {
+    alert('请先选择串口（点「刷新」重新枚举）'); return;
+  }
+  var qs = new URLSearchParams({
+    project: project, op: op, port: port, fqbn: $('fqbn').value || '',
+    verbose: verboseParam()
+  });
+  startStream('/api/action?' + qs.toString(), OP_LABEL[op] || op);
+}
+
+function monitor() {
+  if (busy) return;
+  var port = $('port').value;
+  var baud = $('baud').value;
+  if (!port) { alert('请先选择串口'); return; }
+  startStream('/api/monitor?' + new URLSearchParams({ port: port, baud: baud }).toString(),
+              '串口监视 ' + port + ' @ ' + baud);
+}
+
+async function openDir() {
+  var name = $('project').value;
+  if (!name) return;
+  await fetch('/api/open?project=' + encodeURIComponent(name));
+}
+
+// ---------- 启动 ----------
+(async function init() {
+  await loadEnv();
+  await loadProjects();
+  await loadPorts();
+  logLine('sys', '就绪。选择工程后点「编译」或「编译并烧录」。');
+  logLine('sys', '提示：首次配置后建议先「编译」确认工具链无误，再执行烧录。');
+  logLine('sys', '详细日志默认开启（打印完整编译命令行）；日志太吵可取消勾选。');
+})();
+</script>
+</body></html>
