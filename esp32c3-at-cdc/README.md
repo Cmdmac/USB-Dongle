@@ -1,6 +1,6 @@
 # esp32c3-at-cdc —— ESP32-C3 上的 AT 固件（AT 走 USB-CDC）
 
-把 ESP32-C3 当「Wi-Fi 猫」用：上位机（PC 或单片机）发 AT 文本命令让它联网、收发 TCP/UDP。
+把 ESP32-C3 当「Wi-Fi 猫」用：上位机（PC 或单片机）发 AT 文本命令让它联网、收发 TCP/UDP。  
 命令通道走 **USB-CDC**，插上电脑就是一个 COM 口，不需要引出 UART。
 
 ```
@@ -14,17 +14,17 @@
 
 ## 通道分配（本工程最关键的设计）
 
-| 用途 | 端口 | 说明 |
-| --- | --- | --- |
+| 用途        | 端口                                         | 说明                       |
+| --------- | ------------------------------------------ | ------------------------ |
 | **AT 命令** | USB Serial/JTAG（HWCDC）= Arduino 的 `Serial` | 插电脑即用；波特率无意义（USB 不按波特率传） |
-| **日志** | UART0（GPIO20/21, 115200）= `Serial0` | 两块互不干扰，AT 响应绝不会被日志污染 |
+| **日志**    | UART0（GPIO20/21, 115200）= `Serial0`        | 两块互不干扰，AT 响应绝不会被日志污染     |
 
-**为什么日志绝不走 AT 口**：AT 是严格的一问一答协议，日志混进去会让上位机解析失败。
-所以本文件里**故意不使用** `log_i()` / `ESP_LOGI()` 等 Arduino 日志宏 ——
-在 `CDCOnBoot=cdc` 下 Arduino 的 `Serial` 就是 AT 口，用那些宏等于把日志打进 AT 流。
+**为什么日志绝不走 AT 口**：AT 是严格的一问一答协议，日志混进去会让上位机解析失败。  
+所以本文件里**故意不使用** `log_i()` / `ESP_LOGI()` 等 Arduino 日志宏 ——  
+在 `CDCOnBoot=cdc` 下 Arduino 的 `Serial` 就是 AT 口，用那些宏等于把日志打进 AT 流。  
 全文件只用自写的 `atLog()`。
 
-**没有 UART0 也能看日志**：这块 dongle 没把 UART0 引出来，光靠 `Serial0` 等于看不见。
+**没有 UART0 也能看日志**：这块 dongle 没把 UART0 引出来，光靠 `Serial0` 等于看不见。  
 所以 `atLog()` 会同时写进 RAM 里一个 2KB 的环形缓冲，用 `AT+LOG?` 就能通过 AT 通道倒出来。
 
 ---
@@ -46,8 +46,8 @@ arduino-cli upload  --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc \
                     -p /dev/cu.usbmodemXXXX --input-dir .build .
 ```
 
-> ⚠️ **`CDCOnBoot=cdc` 不是可选项。** 少了它，`ARDUINO_USB_CDC_ON_BOOT=0`，
-> Arduino 的 `Serial` 会指向 UART0，AT 命令就跑到那个没引出的口上去了。
+> ⚠️ **`CDCOnBoot=cdc` 不是可选项。** 少了它，`ARDUINO_USB_CDC_ON_BOOT=0`，  
+> Arduino 的 `Serial` 会指向 UART0，AT 命令就跑到那个没引出的口上去了。  
 > .ino 里有 `#error` 兜底，编译时会直接报错提示，而不是让你烧进去才发现。
 
 `build.json` 已经写好了这个 FQBN，所以用 build-tool 不用手填。
@@ -60,47 +60,47 @@ arduino-cli upload  --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc \
 
 ### 基础
 
-| 命令 | 作用 |
-| --- | --- |
-| `AT` | 测试，回 `OK` |
-| `AT+RST` | 重启 |
-| `AT+GMR` | 版本、SDK 版本、编译时间、芯片、MAC |
-| `ATE0` / `ATE1` | 关 / 开回显（**默认开启**，和经典调制解调器一致） |
-| `AT+RESTORE` | 擦掉 NVS 配置并重启 |
-| `AT+HELP` | 打印命令表 |
-| `AT+SYSLOG=<0\|1>` / `AT+SYSLOG?` | UART0 那份日志的开关 |
-| `AT+LOG?` | 把 RAM 日志环从 AT 口倒出来 |
+| 命令                                | 作用                           |
+| --------------------------------- | ---------------------------- |
+| `AT`                              | 测试，回 `OK`                    |
+| `AT+RST`                          | 重启                           |
+| `AT+GMR`                          | 版本、SDK 版本、编译时间、芯片、MAC        |
+| `ATE0` / `ATE1`                   | 关 / 开回显（**默认开启**，和经典调制解调器一致） |
+| `AT+RESTORE`                      | 擦掉 NVS 配置并重启                 |
+| `AT+HELP`                         | 打印命令表                        |
+| `AT+SYSLOG=<0\|1>` / `AT+SYSLOG?` | UART0 那份日志的开关                |
+| `AT+LOG?`                         | 把 RAM 日志环从 AT 口倒出来           |
 
 ### Wi-Fi
 
-| 命令 | 作用 |
-| --- | --- |
-| `AT+CWMODE=<1\|2\|3>` / `AT+CWMODE?` | 1=STA 2=AP 3=AP+STA |
-| `AT+CWJAP="ssid"[,"pwd"]` | 连 Wi-Fi（阻塞等待，最多 15s） |
-| `AT+CWJAP?` | 查当前 SSID / BSSID / 信道 / RSSI |
-| `AT+CWQAP` | 断开 |
-| `AT+CWLAP` | 扫描（⚠️ 扫描期间连接会短暂中断） |
-| `AT+CWSAP="ssid","pwd",ch,ecn` / `AT+CWSAP?` | 配置热点 |
-| `AT+CIPSTA?` | 查 IP / 网关 / 掩码 |
-| `AT+CIPSTA="dhcp"` | 用 DHCP |
-| `AT+CIPSTA="ip","gw","mask"` | 静态 IP（会自动断开重连一次） |
-| `AT+CIFSR` | 查 IP / MAC |
-| `AT+CWHOSTNAME="name"` / `?` | 主机名（**必须在连接前设置**才生效） |
-| `AT+CWAUTOCONN=<0\|1>` / `?` | 掉线自动重连 |
+| 命令                                           | 作用                           |
+| -------------------------------------------- | ---------------------------- |
+| `AT+CWMODE=<1\|2\|3>` / `AT+CWMODE?`         | 1=STA 2=AP 3=AP+STA          |
+| `AT+CWJAP="ssid"[,"pwd"]`                    | 连 Wi-Fi（阻塞等待，最多 15s）         |
+| `AT+CWJAP?`                                  | 查当前 SSID / BSSID / 信道 / RSSI |
+| `AT+CWQAP`                                   | 断开                           |
+| `AT+CWLAP`                                   | 扫描（⚠️ 扫描期间连接会短暂中断）           |
+| `AT+CWSAP="ssid","pwd",ch,ecn` / `AT+CWSAP?` | 配置热点                         |
+| `AT+CIPSTA?`                                 | 查 IP / 网关 / 掩码               |
+| `AT+CIPSTA="dhcp"`                           | 用 DHCP                       |
+| `AT+CIPSTA="ip","gw","mask"`                 | 静态 IP（会自动断开重连一次）             |
+| `AT+CIFSR`                                   | 查 IP / MAC                   |
+| `AT+CWHOSTNAME="name"` / `?`                 | 主机名（**必须在连接前设置**才生效）         |
+| `AT+CWAUTOCONN=<0\|1>` / `?`                 | 掉线自动重连                       |
 
 `CWJAP` 失败时的 `+CWJAP:<err>`：`1` 超时 / `2` 密码错或认证失败 / `3` 找不到 AP。
 
 ### TCP / UDP
 
-| 命令 | 作用 |
-| --- | --- |
-| `AT+CIPMUX=<0\|1>` / `?` | 单连接 / 多连接（有连接时不许切） |
-| `AT+CIPDINFO=<0\|1>` / `?` | `+IPD` 是否附带远端 ip/port |
-| `AT+CIPSTART=[link,]"TCP\|UDP","host",port[,localport]` | 建连接 |
-| `AT+CIPSEND=[link,]<len>` | 发数据，回 `>` 后跟 len 个字节 |
-| `AT+CIPCLOSE[=link]` | 关连接（不带参数：单连接关那一个，多连接全关） |
-| `AT+CIPSERVER=<0\|1>[,port]` | 开/关 TCP 服务器（要求 `CIPMUX=1`） |
-| `AT+CIPSTATUS` | 连接状态 |
+| 命令                                                      | 作用                         |
+| ------------------------------------------------------- | -------------------------- |
+| `AT+CIPMUX=<0\|1>` / `?`                                | 单连接 / 多连接（有连接时不许切）         |
+| `AT+CIPDINFO=<0\|1>` / `?`                              | `+IPD` 是否附带远端 ip/port      |
+| `AT+CIPSTART=[link,]"TCP\|UDP","host",port[,localport]` | 建连接                        |
+| `AT+CIPSEND=[link,]<len>`                               | 发数据，回 `>` 后跟 len 个字节       |
+| `AT+CIPCLOSE[=link]`                                    | 关连接（不带参数：单连接关那一个，多连接全关）    |
+| `AT+CIPSERVER=<0\|1>[,port]`                            | 开/关 TCP 服务器（要求 `CIPMUX=1`） |
+| `AT+CIPSTATUS`                                          | 连接状态                       |
 
 ---
 
@@ -120,8 +120,8 @@ arduino-cli upload  --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc \
 
 单连接模式（`CIPMUX=0`）不输出 `<link>`。
 
-> ⚠️ **没有 USB 主机连接时，发往 AT 口的数据会被丢弃。** 这是 HWCDC 的 FIFO 策略
-> （源码里 `!isCDC_Connected()` 分支直接走 flush），好处是拔了 USB 不会卡住 loop，
+> ⚠️ **没有 USB 主机连接时，发往 AT 口的数据会被丢弃。** 这是 HWCDC 的 FIFO 策略  
+> （源码里 `!isCDC_Connected()` 分支直接走 flush），好处是拔了 USB 不会卡住 loop，  
 > 代价是这段时间的 `+IPD` 上报会丢。要可靠收数据，保持串口打开。
 
 ---
@@ -175,50 +175,50 @@ SEND OK
 
 写这份固件时照着 core 3.3.11 的源码逐条核对过，不是猜的：
 
-1. `platform.txt` 里 esp32c3 的额外宏是
-   `-DARDUINO_USB_MODE=1 -DARDUINO_USB_CDC_ON_BOOT={build.cdc_on_boot}`，
+1. `platform.txt` 里 esp32c3 的额外宏是  
+   `-DARDUINO_USB_MODE=1 -DARDUINO_USB_CDC_ON_BOOT={build.cdc_on_boot}`，  
    所以 `CDCOnBoot=cdc` 一定让 `Serial` 指向 `HWCDC`。
-2. core 3.x 里 `WiFiServer` / `WiFiClient` 只是 `NetworkServer` / `NetworkClient` 的 **typedef**，
+2. core 3.x 里 `WiFiServer` / `WiFiClient` 只是 `NetworkServer` / `NetworkClient` 的 **typedef**，  
    `available()` 已标 `deprecated`，应该用 `accept()`。
-3. `NetworkServer::begin()` 会给 listening socket 设 `O_NONBLOCK`，
+3. `NetworkServer::begin()` 会给 listening socket 设 `O_NONBLOCK`，  
    所以 `hasClient()` / `accept()` 都不会阻塞 `loop()`。
-4. `NetworkClient` 的 fd 由 `shared_ptr` 持有、析构函数是**空的**，
+4. `NetworkClient` 的 fd 由 `shared_ptr` 持有、析构函数是**空的**，  
    所以 `link.tcp = server.accept()` 这种按值复制是安全的（不会误关 fd）。
 5. 没有主机连接时 `HWCDC::write()` 直接走 FIFO 丢弃策略、**不阻塞**，拔了 USB 不会卡住 loop。
-6. `HWCDC::read()` 内部是 `xQueueReceive(rx_queue, &c, 0)`，超时为 0 → **不阻塞**。
+6. `HWCDC::read()` 内部是 `xQueueReceive(rx_queue, &c, 0)`，超时为 0 → **不阻塞**。  
    但 `read(buf, size)` 是 `Stream::readBytes` 语义（会等到凑满或超时），所以本工程逐字节读。
-7. core 3.x 的 `wl_status_t` 里**没有** `WL_WRONG_PASSWORD`，
+7. core 3.x 的 `wl_status_t` 里**没有** `WL_WRONG_PASSWORD`，  
    密码错只能落在 `WL_CONNECT_FAILED`，故 `+CWJAP:2` 是推断出来的。
-8. `NetworkServer` 在 core 3.x 里没有 `begin(port)` 之外的独立 accept 超时，
+8. `NetworkServer` 在 core 3.x 里没有 `begin(port)` 之外的独立 accept 超时，  
    连接池满时只能 `stop()` 掉新连接（本工程就是这么做的）。
-9. **.ino 结构坑（2026-09-30 实测修复）**：Arduino 的 .ino 预处理会把所有函数的
-   自动原型插到文件头部；**凡在函数签名里出现的自定义类型（如 `struct Args`、
+9. **.ino 结构坑（2026-09-30 实测修复）**：Arduino 的 .ino 预处理会把所有函数的  
+   自动原型插到文件头部；**凡在函数签名里出现的自定义类型（如 `struct Args`、  
    `struct Link`）必须定义在【第一个函数定义之前】**，否则报 `'Args' has not
-   been declared` / `'Link' does not name a type`。官方 Arduino IDE 的流程同样如此，
+   been declared` / `'Link' does not name a type`。官方 Arduino IDE 的流程同样如此，  
    会强制在文件末尾追加「关键函数在前、类型在前」的搬运建议。
 
 ---
 
 ## 已知边界与没做的部分
 
-| 项 | 说明 |
-| --- | --- |
-| **不支持 `AT+PING`** | Arduino 核没暴露 ICMP socket API，要做得引第三方 `ESP32Ping` 或用 IDF 的 `esp_ping` |
-| **不支持 `AT+CIPSENDEX`** | 只支持定长 `CIPSEND`，不支持 `\0` 结尾的变长模式 |
-| **不支持透传模式** | `AT+CIPMODE=1`（`+++` 退出）没实现，收数据一律走 `+IPD` |
-| **不支持 HTTPS / SSL** | 没接 `NetworkClientSecure` |
-| **UDP 远端只解析一次** | `CIPSTART` 时用 `WiFi.hostByName()` 解析域名并固定下来；域名 IP 变了需重连 |
-| **单连接模式的 link id** | `CIPMUX=0` 时忽略你给的 link id，内部只用唯一在用的那个 |
-| **扫描与连接互斥** | `CWLAP` 是阻塞扫描，会让当前连接短暂中断（官方 ESP-AT 同样如此） |
-| **`CWJAP` / `CWLAP` 期间不响应 AT** | 同步阻塞实现。期间上位机发的命令会先攒在 CDC 的 1024 字节 RX 环里 |
+| 项                              | 说明                                                                   |
+| ------------------------------ | -------------------------------------------------------------------- |
+| **不支持 `AT+PING`**              | Arduino 核没暴露 ICMP socket API，要做得引第三方 `ESP32Ping` 或用 IDF 的 `esp_ping` |
+| **不支持 `AT+CIPSENDEX`**         | 只支持定长 `CIPSEND`，不支持 `\0` 结尾的变长模式                                     |
+| **不支持透传模式**                    | `AT+CIPMODE=1`（`+++` 退出）没实现，收数据一律走 `+IPD`                            |
+| **不支持 HTTPS / SSL**            | 没接 `NetworkClientSecure`                                             |
+| **UDP 远端只解析一次**                | `CIPSTART` 时用 `WiFi.hostByName()` 解析域名并固定下来；域名 IP 变了需重连              |
+| **单连接模式的 link id**             | `CIPMUX=0` 时忽略你给的 link id，内部只用唯一在用的那个                                |
+| **扫描与连接互斥**                    | `CWLAP` 是阻塞扫描，会让当前连接短暂中断（官方 ESP-AT 同样如此）                             |
+| **`CWJAP` / `CWLAP` 期间不响应 AT** | 同步阻塞实现。期间上位机发的命令会先攒在 CDC 的 1024 字节 RX 环里                             |
 
 ---
 
 ## 与同目录其它工程的关系
 
-| 工程 | 定位 |
-| --- | --- |
-| `esp32c3-wifi-serial/` | ESP-IDF：把电脑的 COM 口**透明**地变成局域网服务（无协议） |
-| `esp-wifi-provision/` | Arduino：Wi-Fi 配网模板（HTTP 表单） |
-| **`esp32c3-at-cdc/`** | Arduino：把 dongle 变成**受 AT 命令控制**的 Wi-Fi 猫 |
-| `esp-build-tool/` | 上面三者的网页版编译/刷写工具 |
+| 工程                     | 定位                                        |
+| ---------------------- | ----------------------------------------- |
+| `esp32c3-wifi-serial/` | ESP-IDF：把电脑的 COM 口**透明**地变成局域网服务（无协议）     |
+| `esp-wifi-provision/`  | Arduino：Wi-Fi 配网模板（HTTP 表单）               |
+| **`esp32c3-at-cdc/`**  | Arduino：把 dongle 变成**受 AT 命令控制**的 Wi-Fi 猫 |
+| `esp-build-tool/`      | 上面三者的网页版编译/刷写工具                           |
