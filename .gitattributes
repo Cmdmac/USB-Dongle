@@ -1,0 +1,7 @@
+# Windows 批处理必须是 CRLF 检出：cmd.exe 解析 goto 标签等跨行结构时对 LF-only
+# 文件不稳，而且 core.autocrlf 的取值因机器而异（本机为 true，仓库里存的是 LF）。
+# 这里显式锁死检出行为，不再受克隆方配置影响。
+# 另：这些文件还要求「全 ASCII」——cmd 按 ANSI 代码页读 .bat，UTF-8 中文注释会
+# 字节错位。中文提示一律交给被调用的 python 打印。
+*.bat text eol=crlf
+*.cmd text eol=crlf
