@@ -22,9 +22,9 @@ button{padding:8px 16px;border:0;border-radius:6px;background:#2b6cff;color:#fff
 button.sec{background:#e4e8ef;color:#333}
 button.danger{background:#e05252}
 #term{width:100%;height:260px;background:#101317;color:#d8f0d8;border:0;border-radius:6px;
-font:12px/1.5 Menlo,monospace;padding:10px;overflow:auto;white-space:pre-wrap}
+font:12px/1.5 Menlo,Consolas,monospace;padding:10px;overflow:auto;white-space:pre-wrap}
 #termIn{width:100%;box-sizing:border-box;margin-top:6px;padding:8px;border:1px solid #ccd;border-radius:6px;
-font:13px Menlo,monospace}
+font:13px Menlo,Consolas,monospace}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .pill{font-size:12px;padding:3px 9px;border-radius:12px;background:#eef;color:#335}
 .st{font-size:13px;line-height:1.9}
@@ -36,7 +36,9 @@ font:13px Menlo,monospace}
 
 <div class=card><h3>网页串口终端 <button class=sec onclick=termToggle() id=termBtn>连接</button></h3>
 <div id=term></div>
-<div class=row><input id=termIn placeholder='输入后回车发送到串口' autocomplete=off></div>
+<div class=row><input id=termIn placeholder='输入后回车发送到串口' autocomplete=off>
+<label style='font-size:12px;color:#666;white-space:nowrap;margin:0'>
+<input type=checkbox id=termCrlf checked style='width:auto;margin-right:4px'>行尾 +CRLF</label></div>
 </div>
 
 <div class=card><h3>网络唤醒</h3><div class=row>
@@ -64,25 +66,41 @@ font:13px Menlo,monospace}
 </div>
 
 <script>
-let ws=null,termOn=false;
-async function getJSON(u){let r=await fetch(u);return r.json();}
-async function load(){
+let ws=null,termOn=false,cfgFilled=false;
+async function getJSON(u){let r=await fetch(u);if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}
+async function loadStatus(){
+try{
 let s=await getJSON('/api/status');
 document.getElementById('ver').textContent='v'+s.version;
 document.getElementById('status').innerHTML=
 'IP: <b>'+s.wifi.ip+'</b> &nbsp; Wi-Fi: '+s.wifi.connected+
 ' &nbsp; 网络: '+s.net.mode+':'+s.net.port+' ('+s.net.clients+')'+
 ' &nbsp; 串口: '+s.serial.side+' &nbsp; 运行: '+s.uptime_s+'s';
+}catch(e){/* 设备切网/重启期间会短暂失败：保留上次显示，别把页面刷空 */}
+}
+// 配置表单只在进页面时读一次，之后绝不自动回填。
+// ⚠️ 绝不能把回填放进 5s 轮询：轮询会拿设备里的旧值覆盖用户**正在敲**的输入框，
+// 表现就是"填完 Wi-Fi 名、去填密码，回头 SSID 又空了"，而且完全没有提示。
+// 需要重新同步时由 saveCfg() 显式调用本函数。
+async function loadCfg(){
+try{
 let c=await getJSON('/api/config');
 for(let k of ['wifi_ssid','wifi_pass','hostname','password','net_port','remote_host','remote_port'])
 document.getElementById(k).value=c[k]||'';
 document.getElementById('net_mode').value=c.net_mode;
 document.getElementById('nl_xlate').value=c.nl_xlate||0;
+cfgFilled=true;
+}catch(e){/* 401（设了管理密码尚未通过认证）或切网中：保持 cfgFilled=false，下次再试 */}
 }
+async function load(){await loadStatus();if(!cfgFilled)await loadCfg();}
 function termToggle(){
 if(termOn){ws&&ws.close();termOn=false;document.getElementById('termBtn').textContent='连接';return;}
 let proto=location.protocol==='https:'?'wss':'ws';
-ws=new WebSocket(proto+'://'+location.host+'/ws');termOn=true;
+// 端口必须写死 81：WebSocket 由独立的 WebSocketsServer 提供，而页面本身是
+// WebServer(80) 发的，两者不同端口（旧 IDF 版两者同在一个 httpd 上，所以那时
+// 用 location.host 才对；改 Arduino 版后 WS 搬到了 81，这里没跟着改就会连不上）。
+// 与固件里的 WS_PORT 保持一致。路径随意，写 /ws 只为可读。
+ws=new WebSocket(proto+'://'+location.hostname+':81/ws');termOn=true;
 ws.binaryType='arraybuffer';   // 串口原始字节走 binary 帧，避免 UTF-8 解码破坏
 let authed=false,asked=false;
 document.getElementById('termBtn').textContent='断开';
@@ -108,22 +126,38 @@ let t=document.getElementById('term');
 t.textContent+=asked&&!authed?'[鉴权失败或超时]\n':'[已断开]\n';};
 }
 // 输入框回车 -> 发到串口（按 UTF-8 编码，多字节字符也正确）
+// ⚠️ 默认补 CRLF：bridgeNetRx() 是原样透传，网络->串口方向没有任何换行转换
+// （nl_xlate 只管串口->网络）。而不带行尾的裸文本，多数设备根本不当一条命令。
 document.getElementById('termIn').addEventListener('keydown',function(e){
 if(e.key!=='Enter')return;
 let v=this.value;
 if(!v)return;
-if(ws&&ws.readyState===1)ws.send(v);   // 字符串 send 走 text 帧，UTF-8 编码
+let cr=document.getElementById('termCrlf').checked?'\r\n':'';
+if(ws&&ws.readyState===1)ws.send(v+cr);   // 字符串 send 走 text 帧，UTF-8 编码
 this.value='';
 let t=document.getElementById('term');
-t.textContent+='> '+v+'\n';t.scrollTop=t.scrollHeight;
+t.textContent+='> '+v+(cr?'\\r\\n':'')+'\n';t.scrollTop=t.scrollHeight;
 });
 async function saveCfg(){let c={};
 for(let k of ['wifi_ssid','wifi_pass','hostname','password','net_port','remote_host','remote_port'])
 c[k]=document.getElementById(k).value;
 c.net_mode=+document.getElementById('net_mode').value;
 c.nl_xlate=+document.getElementById('nl_xlate').value;
+let m=document.getElementById('msg');
+try{
 let r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(c)});
-document.getElementById('msg').textContent=r.ok?'已保存':'失败';setTimeout(()=>load(),800);}
+if(!r.ok){m.textContent='保存失败：HTTP '+r.status+(r.status===401?'（管理密码不对）':'');return;}
+let j=await r.json();
+if(j.wifi_changed){
+// 换 Wi-Fi 后设备会 disconnect 再 begin，本页（来自旧网络）必然断开，
+// 这时候再去重读配置只会失败并把输入框刷空，所以保留用户填的内容并给出去向提示。
+m.textContent='已保存，正在切换 Wi-Fi：本页会断开，请连到新网络后用新 IP 访问';
+}else{
+m.textContent='已保存';
+setTimeout(loadCfg,300);   // 重读一次，显示设备侧真实落盘值
+}
+}catch(e){m.textContent='保存请求失败：'+e.message+'(设备可能已在切换网络)';}
+}
 async function wolAll(){await fetch('/api/wol',{method:'POST',headers:{'Content-Type':'application/json'},body:'{"all":true}'});}
 async function doReboot(){if(confirm('确认重启?'))await fetch('/api/reboot',{method:'POST'});}
 load();setInterval(load,5000);

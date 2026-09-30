@@ -72,6 +72,9 @@
 #define TCP_RX_BUF    512
 #define BR_OUT_BUF    (TCP_RX_BUF * 2)
 #define WS_SLOTS      5          // WS 终端连接数上限 = 库 WEBSOCKETS_SERVER_CLIENT_MAX(5)
+#define HTTP_PORT     80         // 管理页 / REST / OTA（WebServer）
+#define WS_PORT       81         // WebSocket 终端（独立端口，和 80 不能共存）
+                                 // ⚠️ index_html.h 里的连接地址写死了这个值，改这里要同步改
 #define LOGRING_SZ    2048       // RAM 日志环
 #define WOL_MAX       4
 #define SCAN_TIMEOUT  15000
@@ -139,7 +142,7 @@ static bool     wsAuthed[WS_SLOTS];        // 与库 WEBSOCKETS_SERVER_CLIENT_MA
 static uint32_t wsConnMs[WS_SLOTS];        // 连接时间戳（5s 鉴权窗口）
 
 // Web 管理服务器
-static WebServer web(80);
+static WebServer web(HTTP_PORT);
 
 // MQTT
 static WiFiClient   mqttNet;
@@ -679,6 +682,14 @@ static String jsonGet(const String &body, const char *key) {
   return body.substring(p, e);
 }
 
+// key 是否**出现在 body 里**。用来区分两件不同的事：
+//   字段缺失（调用方压根没传） -> 保留原值
+//   字段传了空串（用户在页面上清空） -> 真的清空
+// 只看 jsonGet 的返回值分不出这两者，都是 ""。带默认值的字段必须用这个判。
+static bool jsonHas(const String &body, const char *key) {
+  return body.indexOf("\"" + String(key) + "\":") >= 0;
+}
+
 static void handleConfigPost() {
   if (!checkAuth()) { web.requestAuthentication(); web.send(401, "text/plain", "unauthorized"); return; }
   String body = web.arg("plain");   // WebServer 把非 form 的 POST body 存为 "plain" 参数
@@ -693,10 +704,10 @@ static void handleConfigPost() {
   v = jsonGet(body, "wifi_ssid");   strlcpy(nc.wifiSsid, v.c_str(), sizeof(nc.wifiSsid));
   v = jsonGet(body, "wifi_pass");   strlcpy(nc.wifiPass, v.c_str(), sizeof(nc.wifiPass));
   v = jsonGet(body, "hostname");    strlcpy(nc.hostname, v.c_str(), sizeof(nc.hostname));
-  v = jsonGet(body, "password");    if (v.length()) strlcpy(nc.password, v.c_str(), sizeof(nc.password));
+  v = jsonGet(body, "password");    if (jsonHas(body, "password"))    strlcpy(nc.password, v.c_str(), sizeof(nc.password));
   v = jsonGet(body, "remote_host"); strlcpy(nc.remoteHost, v.c_str(), sizeof(nc.remoteHost));
   v = jsonGet(body, "mqtt_uri");    strlcpy(nc.mqttUri, v.c_str(), sizeof(nc.mqttUri));
-  v = jsonGet(body, "mqtt_prefix"); if (v.length()) strlcpy(nc.mqttPrefix, v.c_str(), sizeof(nc.mqttPrefix));
+  v = jsonGet(body, "mqtt_prefix"); if (jsonHas(body, "mqtt_prefix")) strlcpy(nc.mqttPrefix, v.c_str(), sizeof(nc.mqttPrefix));
   v = jsonGet(body, "mqtt_user");   strlcpy(nc.mqttUser, v.c_str(), sizeof(nc.mqttUser));
   v = jsonGet(body, "mqtt_pass");   strlcpy(nc.mqttPass, v.c_str(), sizeof(nc.mqttPass));
 
@@ -873,7 +884,7 @@ static void webSetup() {
   const char *hdr[] = { "Authorization" };
   web.collectHeaders(hdr, 1);
   web.begin();
-  wlog("[web] HTTP 服务已启动 (80)\r\n");
+  wlog("[web] HTTP 服务已启动 (%u)\r\n", (unsigned)HTTP_PORT);
 }
 
 // ============================================================================
@@ -921,8 +932,10 @@ void setup() {
     WiFi.mode(WIFI_AP_STA);
     char apSsid[32];
     uint64_t mac = ESP.getEfuseMac();
-    snprintf(apSsid, sizeof(apSsid), "ESP32C3-Serial-%02X%02X",
-             (unsigned)(mac >> 16) & 0xFF, (unsigned)(mac >> 8) & 0xFF);
+    // 后缀取 MAC 后两字节（getEfuseMac 的低 8 位就是 MAC 最后一字节），
+    // 与 esp-wifi-provision / esp32c3-at-cdc 保持同一规则
+    snprintf(apSsid, sizeof(apSsid), "USB-Dongle-%02X%02X",
+             (unsigned)(mac >> 8) & 0xFF, (unsigned)mac & 0xFF);
     WiFi.softAP(apSsid, "12345678");
     wlog("[wifi] 配网热点: SSID=%s 密码=12345678 IP=%s\r\n",
          apSsid, WiFi.softAPIP().toString().c_str());
@@ -938,10 +951,10 @@ void setup() {
   // 网络 + WS + Web
   netStart();
 
-  wsSrv = new WebSocketsServer(81);
+  wsSrv = new WebSocketsServer(WS_PORT);
   wsSrv->begin();
   wsSrv->onEvent(wsEvent);
-  wlog("[ws] WebSocket 终端已启动 (81)\r\n");
+  wlog("[ws] WebSocket 终端已启动 (%u)\r\n", (unsigned)WS_PORT);
 
   webSetup();
 
