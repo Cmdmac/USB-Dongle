@@ -353,6 +353,9 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
      display:flex;justify-content:space-between}
   li:active{background:#f4f6fa}
   li .rssi{color:#999;font-size:12px}
+  .lright{display:flex;align-items:center;gap:5px}
+  .wsvg{width:15px;height:15px;flex:none}
+  .wa{fill:none;stroke:#888;stroke-width:2.2;stroke-linecap:round}
   .ok{color:#17a34a}
   .err{color:#d33}
   .hint{font-size:12px;color:#999;margin-top:10px;line-height:1.6}
@@ -413,6 +416,20 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
 var $ = function(id){ return document.getElementById(id); };
 var _mdns = '';
 
+// SVG 信号图标：按 RSSI 分 4 档点亮 3 根弧（>=-50 三格 / -60 两格 / -70 一格 / 其余零格）
+function wifiIcon(rssi){
+  var lv = rssi >= -50 ? 3 : (rssi >= -60 ? 2 : (rssi >= -70 ? 1 : 0));
+  var arc = function(d, n){
+    return '<path d="' + d + '" fill="none" stroke="' + (n <= lv ? '#2b6cff' : '#d5d8de') +
+           '" stroke-width="2.2" stroke-linecap="round"/>';
+  };
+  return '<svg class="wsvg" viewBox="0 0 15 15">' +
+         arc('M0 6a10 10 0 0 1 15 0', 3) +
+         arc('M1.5 7.8a7 7 0 0 1 12 0', 2) +
+         arc('M3.5 9.5a4 4 0 0 1 8 0', 1) +
+         '<circle cx="7.5" cy="12" r="1.4" fill="#2b6cff"/></svg>';
+}
+
 function refresh(){
   fetch('/api/status').then(function(r){ return r.json(); }).then(function(s){
     $('mode').innerText = s.sta ? '已连接局域网 (STA)' : '配网热点 (AP)';
@@ -434,8 +451,9 @@ function scan(){
     if (!list.length) { $('hint').innerText = '没扫到网络，靠近路由器再试。'; }
     list.forEach(function(ap){
       var li = document.createElement('li');
-      li.innerHTML = '<span>' + ap.ssid + '</span><span class="rssi">' +
-                     ap.rssi + ' dBm' + (ap.lock ? ' [加密]' : '') + '</span>';
+      li.innerHTML = '<span>' + ap.ssid + '</span>' +
+        '<span class="lright">' + wifiIcon(ap.rssi) +
+        '<span class="rssi">' + ap.rssi + ' dBm' + (ap.lock ? ' 🔒' : '') + '</span></span>';
       li.onclick = function(){ $('ssid').value = ap.ssid; $('pwd').focus(); };
       ul.appendChild(li);
     });

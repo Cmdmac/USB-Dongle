@@ -1,0 +1,258 @@
+<!doctype html><html lang="zh"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Wi-Fi 配网（界面模拟）</title>
+<!--
+  ★★★ 这是 esp-wifi-provision 固件配网页面的【高保真界面模拟】★★★
+  - HTML 结构 / CSS 与固件内嵌的 INDEX_HTML（PROGMEM）完全一致
+  - 差异仅一处：window.fetch 被替换为假数据（模拟 /api/status、/api/scan、
+    /api/wifi、/api/forgetwifi 四个接口），无需真机即可演示全部交互
+  - 顶部"演示控制"卡片是真机上没有的，仅用于在 AP/STA 两种状态间切换
+-->
+<style>
+  *{box-sizing:border-box}
+  body{font-family:-apple-system,"PingFang SC",sans-serif;margin:0;padding:16px;
+       background:#f2f3f5;color:#222;font-size:15px}
+  .wrap{max-width:460px;margin:0 auto}
+  h1{font-size:19px;margin:6px 0 16px}
+  .card{background:#fff;border-radius:12px;padding:16px;margin-bottom:14px;
+        box-shadow:0 1px 3px rgba(0,0,0,.07)}
+  h2{font-size:15px;margin:0 0 12px;color:#333}
+  label{display:block;font-size:12px;color:#888;margin:10px 0 4px}
+  input{width:100%;padding:10px;border:1px solid #dde;border-radius:8px;font-size:15px}
+  button{padding:10px 16px;border:0;border-radius:8px;background:#2b6cff;color:#fff;
+         font-size:15px;cursor:pointer}
+  button.sec{background:#e8ebf0;color:#333}
+  button:disabled{opacity:.5}
+  .row{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
+  .st{font-size:14px;line-height:2}
+  .st b{font-weight:600}
+  .muted{color:#888;font-size:12px}
+  ul{list-style:none;margin:12px 0 0;padding:0;max-height:240px;overflow:auto}
+  li{padding:10px;border-bottom:1px solid #f0f0f3;font-size:14px;cursor:pointer;
+     display:flex;justify-content:space-between}
+  li:active{background:#f4f6fa}
+  li .rssi{color:#999;font-size:12px}
+  .lright{display:flex;align-items:center;gap:5px}
+  .wsvg{width:15px;height:15px;flex:none}
+  .ok{color:#17a34a}
+  .err{color:#d33}
+  .hint{font-size:12px;color:#999;margin-top:10px;line-height:1.6}
+  .done{display:none;background:#eef7ee;border:1px solid #cfe8cf;border-radius:12px;
+        padding:16px;margin-bottom:14px;font-size:14px;line-height:1.8}
+  .tagp{display:inline-block;background:#eef;color:#335;border-radius:10px;
+        padding:2px 8px;font-size:12px;margin-left:6px}
+  /* ↓↓↓ 模拟页专属样式（真机固件里没有）↓↓↓ */
+  .demo{background:#fffbe8;border:2px dashed #e6b800;border-radius:12px;
+        padding:14px 16px;margin-bottom:14px;font-size:13px;line-height:1.7}
+  .demo b{color:#8a6d00}
+  .demo button{background:#8a6d00;font-size:13px;padding:7px 14px;margin-top:8px}
+</style></head><body><div class="wrap">
+
+<h1>设备 Wi-Fi 配网</h1>
+
+<!-- ↓↓↓ 演示控制卡片（真机上没有）↓↓↓ -->
+<div class="demo">
+  <b>界面模拟模式</b> —— 样式与固件内嵌页面完全一致，接口返回假数据。<br>
+  当前模拟：<b id="demoMode">配网热点 (AP) 模式</b>（手机连设备热点后看到的页面）。
+  <br>
+  <button id="demoToggle" onclick="demoToggleMode()">切到 STA 已连模式看看</button>
+</div>
+
+<div class="card">
+  <h2>当前状态</h2>
+  <div class="st">
+    模式: <b id="mode">读取中...</b><br>
+    IP: <b id="ip">-</b><br>
+    已连网络: <b id="ssid">-</b><span id="rssi"></span><br>
+    管理地址: <b id="mdns">-</b>
+  </div>
+</div>
+
+<div class="done" id="done">
+  <b class="ok">配置已保存，设备正在重启并连接 Wi-Fi。</b><br>
+  请把手机切回「<b id="doneSsid"></b>」，网络恢复后本页会自动打开设备页面。<br>
+  <span class="muted">若没自动跳转，手动访问 <b id="doneUrl"></b></span>
+</div>
+
+<div class="card">
+  <h2>连接到 Wi-Fi</h2>
+  <label>Wi-Fi 名称 (SSID)</label>
+  <input id="ssid" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="选择下方列表或手动输入">
+  <label>密码</label>
+  <input id="pwd" type="password" autocomplete="off" placeholder="开放网络留空">
+  <div class="row">
+    <button id="btnSave" onclick="save()">保存并连接</button>
+    <button class="sec" id="btnScan" onclick="scan()">扫描周边网络</button>
+  </div>
+  <ul id="list"></ul>
+  <div class="hint" id="hint">
+    仅支持 <b>2.4GHz</b> 网络。扫描时热点会短暂中断属正常现象。
+  </div>
+</div>
+
+<div class="card">
+  <a href="#" onclick="forget();return false" style="color:#c33;font-size:14px">
+    忘记 Wi-Fi，恢复热点模式</a>
+  <div class="hint">清空已保存的凭证，设备重启后重新进入配网热点。</div>
+</div>
+
+<div class="card">
+  <div class="hint">
+    固件 <span id="fw"></span><span class="tagp" id="mver"></span><br>
+    本机唯一编号: <b id="suffix"></b>
+  </div>
+</div>
+
+</div><script>
+/* ============================================================
+ *  模拟层：拦截 fetch，替换固件的四个 HTTP 接口（真机无此段）
+ * ============================================================ */
+var MOCK_STA = false;
+var MOCK_STATUS_AP  = { sta:false, ip:"192.168.4.1", ssid:"", rssi:0,
+                        mdns:"http://esp-a1b2.local",
+                        fw:"esp-wifi-provision 1.0.0", mac:"A1B2",
+                        chip:"ESP32-C3" };
+var MOCK_STATUS_STA = { sta:true, ip:"192.168.1.108", ssid:"Home-WiFi", rssi:-52,
+                        mdns:"http://esp-a1b2.local",
+                        fw:"esp-wifi-provision 1.0.0", mac:"A1B2",
+                        chip:"ESP32-C3" };
+var MOCK_SCAN = [
+  { ssid:"Home-WiFi",      rssi:-42, lock:1 },
+  { ssid:"ChinaNet-x8Kz",  rssi:-58, lock:1 },
+  { ssid:"Meizu-Office",   rssi:-66, lock:1 },
+  { ssid:"TP-LINK_Guest",  rssi:-73, lock:1 },
+  { ssid:"FreeCoffee",     rssi:-81, lock:0 }
+];
+
+var _realFetch = window.fetch;
+window.fetch = function(url, opts){
+  // STA 模式下模拟信号强度轻微抖动，页面每 3 秒刷新一次能看到变化
+  var sta = JSON.parse(JSON.stringify(MOCK_STATUS_STA));
+  sta.rssi += (Math.floor(Math.random()*5) - 2);
+
+  return new Promise(function(resolve, reject){
+    setTimeout(function(){
+      if (url === '/api/status') {
+        resolve({ ok:true, json:function(){
+          return Promise.resolve(MOCK_STA ? sta : MOCK_STATUS_AP);
+        }});
+      } else if (url === '/api/scan') {
+        setTimeout(function(){               // 模拟同步扫描 ~1.5s 的阻塞耗时
+          resolve({ ok:true, json:function(){ return Promise.resolve(MOCK_SCAN); }});
+        }, 1500);
+      } else if (url === '/api/wifi' || url === '/api/forgetwifi') {
+        console.log('[模拟] POST ' + url, opts && opts.body);
+        resolve({ ok:true, json:function(){ return Promise.resolve({ok:true,reboot:true}); }});
+      } else {
+        reject(new Error('404'));
+      }
+    }, 120);   // 模拟网络往返延迟
+  });
+};
+
+function demoToggleMode(){
+  MOCK_STA = !MOCK_STA;
+  document.getElementById('demoMode').innerText = MOCK_STA
+    ? '已连局域网 (STA) 模式（连上家里 Wi-Fi 后看到的页面）'
+    : '配网热点 (AP) 模式（手机连设备热点后看到的页面）';
+  document.getElementById('demoToggle').innerText = MOCK_STA
+    ? '切回 AP 配网模式看看' : '切到 STA 已连模式看看';
+  refresh();
+}
+
+/* ============================================================
+ *  ↓↓↓ 以下与固件内嵌 INDEX_HTML 的脚本完全一致 ↓↓↓
+ * ============================================================ */
+var $ = function(id){ return document.getElementById(id); };
+var _mdns = '';
+
+// SVG 信号图标：按 RSSI 分 4 档点亮 3 根弧（>=-50 三格 / -60 两格 / -70 一格 / 其余零格）
+function wifiIcon(rssi){
+  var lv = rssi >= -50 ? 3 : (rssi >= -60 ? 2 : (rssi >= -70 ? 1 : 0));
+  var arc = function(d, n){
+    return '<path d="' + d + '" fill="none" stroke="' + (n <= lv ? '#2b6cff' : '#d5d8de') +
+           '" stroke-width="2.2" stroke-linecap="round"/>';
+  };
+  return '<svg class="wsvg" viewBox="0 0 15 15">' +
+         arc('M0 6a10 10 0 0 1 15 0', 3) +
+         arc('M1.5 7.8a7 7 0 0 1 12 0', 2) +
+         arc('M3.5 9.5a4 4 0 0 1 8 0', 1) +
+         '<circle cx="7.5" cy="12" r="1.4" fill="#2b6cff"/></svg>';
+}
+
+function refresh(){
+  fetch('/api/status').then(function(r){ return r.json(); }).then(function(s){
+    $('mode').innerText = s.sta ? '已连接局域网 (STA)' : '配网热点 (AP)';
+    $('ip').innerText   = s.ip || '-';
+    $('ssid').innerText = s.ssid || '未连接';
+    $('rssi').innerText = (s.sta && s.rssi) ? ('  ' + s.rssi + ' dBm') : '';
+    $('mdns').innerText = s.mdns || '-';
+    $('fw').innerText   = s.fw;
+    $('mver').innerText = s.chip;
+    $('suffix').innerText = s.mac;
+    if (s.mdns) _mdns = s.mdns;
+  }).catch(function(){});
+}
+
+function scan(){
+  $('btnScan').disabled = true; $('hint').innerText = '扫描中...';
+  fetch('/api/scan').then(function(r){ return r.json(); }).then(function(list){
+    var ul = $('list'); ul.innerHTML = '';
+    if (!list.length) { $('hint').innerText = '没扫到网络，靠近路由器再试。'; }
+    list.forEach(function(ap){
+      var li = document.createElement('li');
+      li.innerHTML = '<span>' + ap.ssid + '</span>' +
+        '<span class="lright">' + wifiIcon(ap.rssi) +
+        '<span class="rssi">' + ap.rssi + ' dBm' + (ap.lock ? ' 🔒' : '') + '</span></span>';
+      li.onclick = function(){ $('ssid').value = ap.ssid; $('pwd').focus(); };
+      ul.appendChild(li);
+    });
+    $('hint').innerText = list.length ? ('扫到 ' + list.length + ' 个网络，点击即可填入。') :
+                                       '没扫到网络。';
+  }).catch(function(){ $('hint').innerText = '扫描失败。'; })
+   .then(function(){ $('btnScan').disabled = false; });
+}
+
+function save(){
+  var ssid = $('ssid').value.trim();
+  var pwd  = $('pwd').value;
+  if (!ssid) { alert('请先填写或选择 Wi-Fi 名称'); return; }
+
+  // 用 POST body(form-urlencoded) 传参，避免部分 WebServer 对 POST+查询串不解析
+  // 导致密码变成空字符串（见文件头说明 5）
+  var body = 'ssid=' + encodeURIComponent(ssid) + '&password=' + encodeURIComponent(pwd);
+  $('btnSave').disabled = true;
+
+  fetch('/api/wifi', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: body
+  }).then(function(r){
+    if (!r.ok) throw new Error('bad');
+    $('doneSsid').innerText = ssid;
+    $('doneUrl').innerText  = _mdns || '设备 mDNS 地址';
+    $('done').style.display = 'block';
+    $('hint').innerText = '已保存，设备重启中...';
+    window._jumped = true;
+    // 网络恢复(切回家里的 Wi-Fi)后自动打开设备页面
+    window.addEventListener('online', function(){
+      if (window._once) return; window._once = true;
+      if (_mdns) location.href = _mdns;
+    });
+  }).catch(function(){
+    $('btnSave').disabled = false;
+    alert('保存失败，请重试');
+  });
+}
+
+function forget(){
+  if (!confirm('确定恢复热点模式？设备将断开当前局域网。')) return;
+  fetch('/api/forgetwifi', {method:'POST'}).then(function(){
+    alert('已清除凭证，设备重启后回到配网热点。');
+  });
+}
+
+refresh();
+setInterval(refresh, 3000);
+</script></body></html>
