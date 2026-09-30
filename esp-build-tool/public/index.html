@@ -49,6 +49,7 @@
   .fwrow:last-child{border-bottom:0}
   .fwrow a{color:#2b6cff;text-decoration:none;font-family:Menlo,monospace;font-size:12px}
   .fwrow a:hover{text-decoration:underline}
+  .fwrow .muted{white-space:nowrap;flex:none;margin-left:8px}
   .tip{font-size:12px;color:#8a919c;line-height:1.7;margin-top:8px}
 </style>
 </head>
@@ -312,6 +313,16 @@ async function loadFirmware() {
   }
 }
 
+// 产物生成时间：今天只显示「今天 HH:mm」，更早的带日期（MM-DD HH:mm）
+function fmtMtime(ms) {
+  var d = new Date(ms);
+  function p(n) { return (n < 10 ? '0' : '') + n; }
+  var hm = p(d.getHours()) + ':' + p(d.getMinutes());
+  var today = new Date();
+  if (d.toDateString() === today.toDateString()) return '今天 ' + hm;
+  return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + hm;
+}
+
 function renderFirmware(files) {
   var box = $('fw');
   box.innerHTML = '';
@@ -331,7 +342,8 @@ function renderFirmware(files) {
     left.appendChild(a);
     var right = document.createElement('span');
     right.className = 'muted';
-    right.textContent = (f.size / 1024).toFixed(1) + ' KB';
+    right.textContent = (f.size / 1024).toFixed(1) + ' KB · ' + fmtMtime(f.mtime);
+    if (f.mtime) right.title = new Date(f.mtime).toLocaleString();
     row.appendChild(left);
     row.appendChild(right);
     box.appendChild(row);
