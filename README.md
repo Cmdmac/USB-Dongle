@@ -11,7 +11,7 @@
 
 | 目录 | 框架 | 这是什么 |
 | --- | --- | --- |
-| [`esp32c3-wifi-serial/`](esp32c3-wifi-serial/) | ESP-IDF 5.x | **无线串口桥**：把电脑的一个 COM 口透明地变成局域网服务（TCP / Telnet / WebSocket / MQTT 都能接进来），另带网页终端、WOL 唤醒、双分区 OTA |
+| [`esp32c3-wifi-serial/`](esp32c3-wifi-serial/) | Arduino | **无线串口桥**：把电脑的一个 COM 口透明地变成局域网服务（TCP / Telnet / WebSocket / MQTT 都能接进来），另带网页终端、WOL 唤醒、双分区 OTA（原 ESP-IDF 版已就地重构为 Arduino 单文件） |
 | [`esp32c3-at-cdc/`](esp32c3-at-cdc/) | Arduino | **AT 固件**：把 dongle 变成受 AT 命令控制的「Wi-Fi 猫」，PC 或单片机发文本命令就能联网、收发 TCP/UDP |
 | [`esp-wifi-provision/`](esp-wifi-provision/) | Arduino | **Wi-Fi 配网模板**：手机连上热点、填表单换 Wi-Fi，兼容 ESP32 系列与 ESP8266/ESP8285 |
 | [`esp-build-tool/`](esp-build-tool/) | Node.js（零依赖） | **网页版编译/刷写工具**：自动扫描同级目录下的工程，一键切换、编译、烧录、串口监视 |
