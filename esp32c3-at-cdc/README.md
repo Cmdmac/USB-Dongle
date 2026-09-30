@@ -171,7 +171,7 @@ SEND OK
 
 ---
 
-## 8 条已核实的平台事实（避免下次再踩）
+## 9 条已核实的平台事实（避免下次再踩）
 
 写这份固件时照着 core 3.3.11 的源码逐条核对过，不是猜的：
 
@@ -191,6 +191,11 @@ SEND OK
    密码错只能落在 `WL_CONNECT_FAILED`，故 `+CWJAP:2` 是推断出来的。
 8. `NetworkServer` 在 core 3.x 里没有 `begin(port)` 之外的独立 accept 超时，
    连接池满时只能 `stop()` 掉新连接（本工程就是这么做的）。
+9. **.ino 结构坑（2026-09-30 实测修复）**：Arduino 的 .ino 预处理会把所有函数的
+   自动原型插到文件头部；**凡在函数签名里出现的自定义类型（如 `struct Args`、
+   `struct Link`）必须定义在【第一个函数定义之前】**，否则报 `'Args' has not
+   been declared` / `'Link' does not name a type`。官方 Arduino IDE 的流程同样如此，
+   会强制在文件末尾追加「关键函数在前、类型在前」的搬运建议。
 
 ---
 

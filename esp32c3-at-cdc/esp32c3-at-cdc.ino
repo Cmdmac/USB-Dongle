@@ -116,6 +116,30 @@ struct AtCfg {
   uint16_t serverPort;
 };
 
+// ── 注意：以下两个 struct 必须位于【第一个函数定义之前】─────────────────────
+//    Arduino 的 .ino 预处理会自动为所有函数生成原型并插到文件头部；若 struct
+//    定义在第一个函数之后，生成的原型引用不到类型，编译会报
+//    'Args' has not been declared / 'Link' does not name a type。
+//    （2026-09-30 用最小探针在本机 arduino-cli + core 3.3.11 实测：
+//      struct 放函数后 → 必炸；全部前置 → 干净通过。）
+struct Args {
+  int  n;
+  bool isStr[MAX_ARGS];
+  char s[MAX_ARGS][ARG_STR_MAX];
+};
+
+struct Link {
+  bool          used;
+  bool          isUdp;
+  bool          isServer;    // 由 CIPSERVER accept 进来的
+  NetworkClient tcp;
+  NetworkUDP    udp;
+  IPAddress     peerIp;
+  uint16_t      peerPort;
+  uint16_t      localPort;
+  bool          udpOpen;
+};
+
 static AtCfg g_cfg;
 static Preferences g_prefs;
 
@@ -200,13 +224,8 @@ static void baseMac(uint8_t *mac) {
 
 // ============================================================================
 //  参数解析：把 `"a","b",12` 拆成 token；引号内的逗号不切分
+//    （struct Args 已前置到文件头部——.ino 自动原型会引用它，见上面注释）
 // ============================================================================
-struct Args {
-  int  n;
-  bool isStr[MAX_ARGS];
-  char s[MAX_ARGS][ARG_STR_MAX];
-};
-
 static void parseArgs(const char *in, Args &a) {
   a.n = 0;
   const char *p = in ? in : "";
@@ -243,19 +262,8 @@ static void parseArgs(const char *in, Args &a) {
 
 // ============================================================================
 //  连接池
+//    （struct Link 已前置到文件头部——.ino 自动原型会引用它，见上面注释）
 // ============================================================================
-struct Link {
-  bool          used;
-  bool          isUdp;
-  bool          isServer;    // 由 CIPSERVER accept 进来的
-  NetworkClient tcp;
-  NetworkUDP    udp;
-  IPAddress     peerIp;
-  uint16_t      peerPort;
-  uint16_t      localPort;
-  bool          udpOpen;
-};
-
 static Link g_links[MAX_LINKS];
 static NetworkServer g_server;
 static bool g_serverOn = false;
