@@ -81,6 +81,10 @@ static void cfgWipe();
 #define FW_NAME       "esp32c3-at-cdc"
 #define FW_VERSION    "1.0.0"
 
+// 热点名默认值：前缀 + MAC 后两字节（如 USB-Dongle-2B3C）。
+// AT+CWSAP 设过之后以 NVS 里存的值为准，这里只影响出厂/恢复出厂设置。
+#define AP_SSID_PREFIX "USB-Dongle-"
+
 #define MAX_LINKS     5      // link id 0..4（客户端连接 + 服务器 accept 的连接共用）
 #define LINE_MAX      640
 #define ARG_STR_MAX   128
@@ -716,6 +720,19 @@ static void pumpLinks() {
 // ============================================================================
 //  持久化
 // ============================================================================
+// 热点名后缀：MAC 后两字节（4 位十六进制，大写）。
+// ESP.getEfuseMac() 的低 8 位就是 MAC 的最后一字节，与 esp-wifi-provision
+// 的 getMacSuffix() 同一规则，保证同项目各固件热点名风格一致。
+static const char *apSsidSuffix() {
+  static char sfx[5] = {0};
+  if (!sfx[0]) {
+    uint64_t mac = ESP.getEfuseMac();
+    snprintf(sfx, sizeof(sfx), "%02X%02X",
+             (unsigned)(mac >> 8) & 0xFF, (unsigned)mac & 0xFF);
+  }
+  return sfx;
+}
+
 static void cfgDefaults() {
   memset(&g_cfg, 0, sizeof(g_cfg));
   g_cfg.mode       = 1;
@@ -728,7 +745,7 @@ static void cfgDefaults() {
   g_cfg.ssid[0]    = 0;
   g_cfg.pass[0]    = 0;
   strcpy(g_cfg.host, FW_NAME);
-  strcpy(g_cfg.apSsid, "ESP_AT");
+  snprintf(g_cfg.apSsid, sizeof(g_cfg.apSsid), "%s%s", AP_SSID_PREFIX, apSsidSuffix());
   strcpy(g_cfg.apPass, "12345678");
   g_cfg.apCh       = 1;
   g_cfg.apEcn      = 3;
@@ -792,6 +809,15 @@ static void cfgLoad() {
     atLog("[cfg] loaded\r\n");
   }
   g_prefs.end();
+
+  // ── 迁移：旧固件的默认热点名是 "ESP_AT"，这里升级成 USB-Dongle-XXXX。
+  //    只有恰好等于旧默认值时才动（说明用户没通过 AT+CWSAP 改过），
+  //    否则尊重 NVS 里用户自己设的名字。改完立刻回写，只发生一次。
+  if (strcmp(g_cfg.apSsid, "ESP_AT") == 0) {
+    snprintf(g_cfg.apSsid, sizeof(g_cfg.apSsid), "%s%s", AP_SSID_PREFIX, apSsidSuffix());
+    cfgSave();
+    atLog("[cfg] AP SSID migrated -> %s\r\n", g_cfg.apSsid);
+  }
 }
 
 static void cfgWipe() {
@@ -844,6 +870,7 @@ static void cmdHelp(const char *, bool, bool) {
   atRaw("AT+LOG?                 导出 RAM 日志环\n");
   atRaw("AT+CWMODE=<1|2|3>       1STA 2AP 3AP+STA\n");
   atRaw("AT+CWJAP=\"ssid\"[,\"pwd\"]  连 Wi-Fi\n");
+  atRaw("AT+CWJAP                用上次配置重连\n");
   atRaw("AT+CWJAP?               查询当前连接\n");
   atRaw("AT+CWQAP                断开 Wi-Fi\n");
   atRaw("AT+CWLAP                扫描（会短暂断开）\n");
@@ -899,22 +926,10 @@ static void cmdCwmode(const char *arg, bool q, bool s) {
   atOk();
 }
 
-static void cmdCwjap(const char *arg, bool q, bool s) {
-  if (q) {
-    if (WiFi.status() != WL_CONNECTED) { atRaw("\r\n+CWJAP:not connected\r\n"); atError(); return; }
-    AT_PORT.printf("\r\n+CWJAP:\"%s\",\"%s\",%d,%d\r\n",
-                   WiFi.SSID().c_str(), WiFi.BSSIDstr().c_str(),
-                   (int)WiFi.channel(), (int)WiFi.RSSI());
-    atOk();
-    return;
-  }
-  if (!s) { atError(); return; }
-
-  Args a; parseArgs(arg, a);
-  if (a.n < 1 || !a.s[0][0]) { atError(); return; }
-  const char *ssid = a.s[0];
-  const char *pass = (a.n >= 2) ? a.s[1] : "";
-
+// 真正连一次，并按官方格式把结果吐给上位机。
+// persist=true 时把 SSID/密码写进 NVS（只有 "AT+CWJAP=ssid,pwd" 才写；
+// 裸 AT+CWJAP 是"用上次配置重连"，当然不该反过来覆盖配置）。
+static void cwjapJoin(const char *ssid, const char *pass, bool persist) {
   atLog("[wifi] join \"%s\"\r\n", ssid);
   linkFreeAll();
   int err = wifiConnect(ssid, pass, CONN_TIMEOUT);
@@ -925,16 +940,49 @@ static void cmdCwjap(const char *arg, bool q, bool s) {
     return;
   }
 
-  strncpy(g_cfg.ssid, ssid, sizeof(g_cfg.ssid) - 1);
-  g_cfg.ssid[sizeof(g_cfg.ssid) - 1] = 0;
-  strncpy(g_cfg.pass, pass, sizeof(g_cfg.pass) - 1);
-  g_cfg.pass[sizeof(g_cfg.pass) - 1] = 0;
-  cfgSave();
+  if (persist) {
+    strncpy(g_cfg.ssid, ssid, sizeof(g_cfg.ssid) - 1);
+    g_cfg.ssid[sizeof(g_cfg.ssid) - 1] = 0;
+    strncpy(g_cfg.pass, pass, sizeof(g_cfg.pass) - 1);
+    g_cfg.pass[sizeof(g_cfg.pass) - 1] = 0;
+    cfgSave();
+  }
 
   atRaw("\r\nWIFI CONNECTED\r\n");
   atRaw("\r\nWIFI GOT IP\r\n");
   atLog("[wifi] joined ip=%s rssi=%d\r\n", WiFi.localIP().toString().c_str(), (int)WiFi.RSSI());
   atOk();
+}
+
+static void cmdCwjap(const char *arg, bool q, bool s) {
+  if (q) {
+    if (WiFi.status() != WL_CONNECTED) { atRaw("\r\n+CWJAP:not connected\r\n"); atError(); return; }
+    AT_PORT.printf("\r\n+CWJAP:\"%s\",\"%s\",%d,%d\r\n",
+                   WiFi.SSID().c_str(), WiFi.BSSIDstr().c_str(),
+                   (int)WiFi.channel(), (int)WiFi.RSSI());
+    atOk();
+    return;
+  }
+
+  // 执行命令（裸 AT+CWJAP）：用上次保存的配置重连一次。
+  // 官方 ESP-AT 明确给了这条 Execute Command（"Connect to a targeted AP with
+  // last Wi-Fi configuration"）。早先这里不分青红皂白 atError()，于是裸命令
+  // 永远只回一个 ERROR —— 从现象上没法区分"没这条命令"和"连不上"，
+  // 也跟官方不兼容。
+  if (!s) {
+    if (!g_cfg.ssid[0]) {
+      atLog("[wifi] AT+CWJAP: no saved ssid\r\n");
+      AT_PORT.printf("\r\n+CWJAP:3\r\n");   // 3 = cannot find the target AP
+      atError();
+      return;
+    }
+    cwjapJoin(g_cfg.ssid, g_cfg.pass, false);
+    return;
+  }
+
+  Args a; parseArgs(arg, a);
+  if (a.n < 1 || !a.s[0][0]) { atError(); return; }
+  cwjapJoin(a.s[0], (a.n >= 2) ? a.s[1] : "", true);
 }
 
 static void cmdCwqap(const char *, bool, bool) {

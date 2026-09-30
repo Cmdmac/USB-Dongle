@@ -54,6 +54,30 @@ arduino-cli upload  --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc \
 
 ---
 
+## 上位机怎么发命令（发不出去时看这节）
+
+### 用 esp-build-tool
+
+点「**串口监视**」把端口打开，再用**日志框下面的输入框**发（回车即发，`↑`/`↓` 翻历史）。
+输入框只在监视运行时解锁 —— 写通道就是那个监视进程本身。
+
+### 用别的终端
+
+Arduino IDE 串口监视器、SSCOM、PuTTY、`python -m serial.tools.miniterm COM40 115200` 都行。
+`COM` 号认 **VID:PID = `303A:1001`**（Espressif USB Serial/JTAG），不是 `2BDF:*` 那类别的设备。
+
+### 三个「发了没反应」的坑
+
+| 现象 | 原因 | 处理 |
+| --- | --- | --- |
+| 屏幕上有回显（你自己打的 `AT` 出现了），但没有 `OK` | **没发换行符**。本固件按**行**解析：`feedAtByte()` 只在收到 `\r` 或 `\n` 时才调 `handleLine()`。裸发 `AT` 两个字节，它一个字都不会回 | 勾上「发送新行」/ 在 Arduino 监视器里选 **New Line** 或 **Both NL & CR** |
+| 全程一个字都没有，连 ROM banner 都没有 | 终端把 **DTR/RTS 拉高**，把芯片按在复位 / 下载态（USB Serial/JTAG 的 DTR/RTS 就是复位与 BOOT 线），`loop()` 根本没跑 | 关掉流控、把 DTR/RTS 置低。正常应该先看到 `ESP-ROM:esp32c3-api1-...` 再看到 `ready` |
+| 打开就报「拒绝访问 / 端口被占用」 | 同一个 COM 口被另一个程序开着（**Windows 一个口只能一个句柄**） | 关掉别的监视/串口工具。注意：build-tool 的「串口监视」在跑时就会独占该口 |
+
+> 顺便：**波特率无所谓**。AT 走 USB-CDC，USB 不按波特率传，填多少都一样。
+
+---
+
 ## 命令清单
 
 全部 22 条。响应统一 `\r\n` 包边，成功 `OK`，失败 `ERROR`。
@@ -76,11 +100,12 @@ arduino-cli upload  --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc \
 | 命令                                           | 作用                           |
 | -------------------------------------------- | ---------------------------- |
 | `AT+CWMODE=<1\|2\|3>` / `AT+CWMODE?`         | 1=STA 2=AP 3=AP+STA          |
-| `AT+CWJAP="ssid"[,"pwd"]`                    | 连 Wi-Fi（阻塞等待，最多 15s）         |
+| `AT+CWJAP="ssid"[,"pwd"]`                    | 连 Wi-Fi（阻塞等待，最多 15s），成功即写入 NVS |
+| `AT+CWJAP`                                   | 用上次保存的配置重连一次（不覆盖 NVS）        |
 | `AT+CWJAP?`                                  | 查当前 SSID / BSSID / 信道 / RSSI |
-| `AT+CWQAP`                                   | 断开                           |
+| `AT+CWQAP`                                   | 断开（**不清 NVS**，之后还能 `AT+CWJAP` 重连） |
 | `AT+CWLAP`                                   | 扫描（⚠️ 扫描期间连接会短暂中断）           |
-| `AT+CWSAP="ssid","pwd",ch,ecn` / `AT+CWSAP?` | 配置热点                         |
+| `AT+CWSAP="ssid","pwd",ch,ecn` / `AT+CWSAP?` | 配置热点（默认 `USB-Dongle-XXXX`，XXXX = MAC 后两字节） |
 | `AT+CIPSTA?`                                 | 查 IP / 网关 / 掩码               |
 | `AT+CIPSTA="dhcp"`                           | 用 DHCP                       |
 | `AT+CIPSTA="ip","gw","mask"`                 | 静态 IP（会自动断开重连一次）             |
@@ -88,7 +113,28 @@ arduino-cli upload  --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc \
 | `AT+CWHOSTNAME="name"` / `?`                 | 主机名（**必须在连接前设置**才生效）         |
 | `AT+CWAUTOCONN=<0\|1>` / `?`                 | 掉线自动重连                       |
 
-`CWJAP` 失败时的 `+CWJAP:<err>`：`1` 超时 / `2` 密码错或认证失败 / `3` 找不到 AP。
+`CWJAP` 失败时的 `+CWJAP:<err>`：`1` 超时 / `2` 密码错或认证失败 / `3` 找不到 AP（含"从没保存过 SSID 却执行裸 `AT+CWJAP`"）。
+
+`AT+CWJAP` 有三种形态，别搞混（跟官方 ESP-AT 一致）：
+
+| 写法 | 类型 | 行为 |
+| --- | --- | --- |
+| `AT+CWJAP="ssid","pwd"` | 设置命令 | 连指定 AP，成功写 NVS |
+| `AT+CWJAP?` | 查询命令 | 已连则回 `+CWJAP:"ssid","bssid",ch,rssi`；未连回 `+CWJAP:not connected` + `ERROR` |
+| `AT+CWJAP`（裸） | **执行命令** | 用 NVS 里的配置重连一次；没保存过就回 `+CWJAP:3` + `ERROR` |
+
+⚠️ ESP32-C3 的射频**只支持 2.4 GHz**。SSID 是 5 GHz 的会直接落 `+CWJAP:3`（找不到 AP），而 `AT+CWLAP` 里也不会出现它——别以为是密码或固件的问题。
+
+接 WiFi 的标准三步：
+
+```
+AT+CWMODE=1                              # 确认是 STA（出厂默认就是 1）
+AT+CWLAP                                 # 先看 SSID 在不在、什么加密方式
+AT+CWJAP="MyWiFi","mypassword"           # 连；最多阻塞 15s
+AT+CIPSTA?                               # 确认拿到 IP（不是 0.0.0.0）
+```
+
+连上之后 SSID/密码已进 NVS，下次上电会自动连（`AT+CWAUTOCONN=1` 时掉线也会自动重连）；临时掉线可用 `AT+CWQAP` 断、`AT+CWJAP` 再连。
 
 ### TCP / UDP
 
