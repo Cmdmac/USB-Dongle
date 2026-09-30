@@ -47,10 +47,15 @@
   .fwrow{padding:7px 0;border-bottom:1px solid #f0f1f4;font-size:13px;
          display:flex;justify-content:space-between;align-items:center}
   .fwrow:last-child{border-bottom:0}
-  .fwrow a{color:#2b6cff;text-decoration:none;font-family:Menlo,monospace;font-size:12px}
+  /* 产物文件名跟随页面字体（原来写死 Menlo,monospace：Windows 上没有 Menlo，
+     落到浏览器默认等宽 Courier New，和卡片其它文字明显不是一套） */
+  .fwrow a{color:#2b6cff;text-decoration:none;font-family:inherit}
   .fwrow a:hover{text-decoration:underline}
   .fwrow .muted{white-space:nowrap;flex:none;margin-left:8px}
   .tip{font-size:12px;color:#8a919c;line-height:1.7;margin-top:8px}
+  .cmdrow{display:flex;gap:8px;align-items:center;margin-top:10px}
+  #cmd{flex:1;width:auto}
+  #cmd:disabled{background:#f4f5f7;color:#a6acb6;cursor:not-allowed}
 </style>
 </head>
 <body><div class="wrap">
@@ -112,6 +117,20 @@
       </span>
     </div>
     <pre id="log"></pre>
+    <div class="cmdrow">
+      <input id="cmd" disabled onkeydown="onCmdKey(event)"
+             placeholder="发送到串口：点「串口监视」打开端口后可用。例：AT   AT+GMR   AT+CIFSR">
+      <button id="bSend" class="sec sm" onclick="sendCmd()" disabled>发送</button>
+      <label class="chk" title="AT 固件按整行解析，只有收到 \r 或 \n 才会回应">
+        <input type="checkbox" id="cmdNl" checked>行尾 \r\n
+      </label>
+    </div>
+    <div class="tip">
+      「发送」复用串口监视已经打开的那个句柄（<b>不能</b>另开一个连接直接写串口：ESP32-C3 的
+      USB Serial/JTAG 一被打开就复位，DTR/RTS 就是它的复位线）。<br>
+      AT 固件按<b>行</b>解析，所以「行尾 \r\n」默认勾上 —— 裸发 <code>AT</code> 两个字节不会有任何响应。
+      <code>AT+CIPSEND</code> 提示 <code>&gt;</code> 之后要发<b>裸字节</b>，那时取消勾选再点发送。
+    </div>
   </div>
 
   <!-- 固件产物 -->
@@ -193,6 +212,62 @@ function clearLog() {
   if (logTimer) { clearTimeout(logTimer); logTimer = 0; }
   $('log').textContent = '';
 }
+// ---------- 发给串口 ----------
+// 只在串口监视活着的时候可用：服务端会发一条「[发送] 已就绪」的 sys 事件，
+// 收到就解锁。写通道事实上就是监视进程的 stdin，见 server.js 的 serialSend()。
+var monitorOn = false;
+var cmdHist = [], cmdHistIdx = -1;
+
+function setCmdEnabled(on) {
+  monitorOn = on;
+  $('cmd').disabled = !on;
+  $('bSend').disabled = !on;
+  if (on) $('cmd').focus();
+}
+
+function onCmdKey(e) {
+  if (e.key === 'Enter') { e.preventDefault(); sendCmd(); return; }
+  if (e.key === 'ArrowUp') { e.preventDefault(); histMove(-1); }     // 上下翻历史，和终端一样
+  if (e.key === 'ArrowDown') { e.preventDefault(); histMove(1); }
+}
+
+function histMove(d) {
+  if (!cmdHist.length) return;
+  if (cmdHistIdx === -1) cmdHistIdx = cmdHist.length;
+  cmdHistIdx += d;
+  if (cmdHistIdx < 0) cmdHistIdx = 0;
+  if (cmdHistIdx > cmdHist.length) cmdHistIdx = cmdHist.length;
+  $('cmd').value = cmdHistIdx === cmdHist.length ? '' : cmdHist[cmdHistIdx];
+}
+
+async function sendCmd() {
+  if (!monitorOn) { logLine('err', '串口监视没在跑，无法发送'); return; }
+  var el = $('cmd');
+  var text = el.value;
+  if (!text) return;
+  var nl = $('cmdNl').checked;
+  el.value = '';
+  cmdHist.push(text); if (cmdHist.length > 50) cmdHist.shift();
+  cmdHistIdx = -1;
+  try {
+    var r = await fetch('/api/serial-send?data=' + encodeURIComponent(text) + '&nl=' + (nl ? '1' : '0'));
+    // 不直接 r.json()：改完 server.js 还没重启时这个路径是 404 纯文本，
+    // r.json() 会抛 "Unexpected token o"，看不出真正原因
+    var j = null;
+    try { j = JSON.parse(await r.text()); } catch (e) {}
+    // 回显自己发的内容：设备端 ATE1 也会回显一遍，但那是设备的字节，
+    // 分不清是"发出去了"还是"没发出去"，所以本地先记一行
+    if (!j || !j.ok) {
+      logLine('err', '发送失败：' + (j ? (j.reason || '未知原因')
+                : '服务端返回 ' + r.status + '（改了 server.js 之后要重启工具才生效）'));
+      return;
+    }
+    logLine('sys', '→ ' + text + (nl ? '\\r\\n' : '') + '   (' + j.bytes + ' 字节)');
+  } catch (e) {
+    logLine('err', '发送失败：' + e.message);
+  }
+}
+
 function toggleScroll() {
   autoScroll = !autoScroll;
   $('scrollBtn').textContent = '自动滚动：' + (autoScroll ? '开' : '关');
@@ -362,12 +437,14 @@ function setBusy(b) {
 function closeStream() {
   if (es) { es.close(); es = null; }
   setBusy(false);
+  setCmdEnabled(false);        // 监视进程一停，写通道就没了
 }
 
 function stop() {
   if (es) { es.close(); es = null; }
   logLine('sys', '■ 已停止（服务端会结束对应进程）');
   setBusy(false);
+  setCmdEnabled(false);
 }
 
 function startStream(url, label) {
@@ -379,7 +456,12 @@ function startStream(url, label) {
     var d = JSON.parse(e.data);
     logLine('sys', '[命令] ' + d.cmd + ' ' + (d.args || []).join(' '));
   });
-  es.addEventListener('sys', function (e) { logLine('sys', JSON.parse(e.data)); });
+  es.addEventListener('sys', function (e) {
+    var t = JSON.parse(e.data);
+    logLine('sys', t);
+    // 服务端在串口监视进程起来时才发这条 → 收到才解锁「发送」输入框
+    if (typeof t === 'string' && t.indexOf('[发送] 已就绪') === 0) setCmdEnabled(true);
+  });
   es.addEventListener('out', function (e) { logLine('out', JSON.parse(e.data)); });
   es.addEventListener('err', function (e) { logLine('err', JSON.parse(e.data)); });
   es.addEventListener('firmware', function (e) {
@@ -436,6 +518,7 @@ async function openDir() {
   logLine('sys', '就绪。选择工程后点「编译」或「编译并烧录」。');
   logLine('sys', '提示：首次配置后建议先「编译」确认工具链无误，再执行烧录。');
   logLine('sys', '详细日志默认开启（打印完整编译命令行）；日志太吵可取消勾选。');
+  logLine('sys', '要给设备发命令（如 AT 固件）：先点「串口监视」把端口打开，再用日志框下面的输入框发送。');
 })();
 </script>
 </body></html>

@@ -22,6 +22,8 @@
  *   ESP_WORKSPACE     工程根目录，默认取本工具目录的上一级
  *   ARDUINO_CLI_PATH  指定 arduino-cli 可执行文件
  *   IDF_PATH          指定 ESP-IDF 安装目录
+ *   ESPMON_PYTHON     指定跑 tools/serial-monitor.py 的解释器（需已装 pyserial）
+ *   MONITOR_NO_AUTOINSTALL=1  串口监视缺 pyserial 时不要自动创建 .venv 安装
  *
  * 每个工程可选放一个 build.json 覆盖自动探测结果：
  *   Arduino: { "type":"arduino", "fqbn":"esp32:esp32:esp32c3",
@@ -48,6 +50,9 @@ const WORKSPACE = process.env.ESP_WORKSPACE
   : path.resolve(SELF_DIR, '..');
 const PUBLIC_DIR = path.join(SELF_DIR, 'public');
 const MONITOR_SCRIPT = path.join(SELF_DIR, 'tools', 'serial-monitor.py');
+// 工具自带的 Python 环境：串口监视缺 pyserial / 擦除缺 esptool 时按需创建一次
+const MONITOR_VENV = path.join(SELF_DIR, '.venv');
+const MONITOR_AUTO_INSTALL = process.env.MONITOR_NO_AUTOINSTALL !== '1';
 const isWin = () => process.platform === 'win32';
 
 // ==================================================================
@@ -138,14 +143,152 @@ function envInfo() {
       } catch (_) {}
     }
   }
+  const mon = findMonitorPython();     // 会真的跑一次 import serial 验证
   return {
     workspace: WORKSPACE,
     arduinoCli: ARDUINO_CLI,
     arduinoCliVersion: cliVersion,
     idfDir: IDF_DIR,
     idfVersion,
+    monitorPython: mon ? mon.path : null,
+    pyserial: mon ? mon.ver : null,
+    monitorVenv: MONITOR_VENV,
     platform: process.platform,
   };
+}
+
+// ==================================================================
+// 串口监视用的 Python 解释器
+// ==================================================================
+// 为什么不直接用 PATH 里第一个 python3：
+//   一台机器上常有好几个解释器（托管版 / 商店版 / conda / 各种 venv），
+//   排最前面的那个往往最"素"、没装 pyserial —— 拿它跑 serial-monitor.py
+//   只会得到 "No module named 'serial'"。所以这里按优先级逐个人肉验证：
+//   真跑一次 `import serial`，只认能跑通的。
+//
+// 优先级：ESPMON_PYTHON 环境变量 > 本工具 .venv > ESP-IDF 自带 python_env > PATH
+function venvPythonPath() {
+  return isWin() ? path.join(MONITOR_VENV, 'Scripts', 'python.exe')
+                 : path.join(MONITOR_VENV, 'bin', 'python');
+}
+
+// where/which 的全部命中（`which()` 只取第一条，会漏掉后面真正可用的那个）
+function whichAll(cmd) {
+  const bin = isWin() ? 'where' : 'which';
+  const args = isWin() ? [cmd] : ['-a', cmd];
+  try {
+    return execFileSync(bin, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+      .split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  } catch (_) { return []; }
+}
+
+// PATH 里的 python，剔掉两类坑：
+//   - .cmd/.bat 壳：Node 的 spawn/execFile 不能直接执行，且真正的 .exe 就在旁边
+//   - WindowsApps 下的"执行别名"存根：跑它不是报错就是弹微软商店
+function pathPythons() {
+  const out = [];
+  for (const name of ['python3', 'python']) {
+    for (const p of whichAll(name)) {
+      if (isWin() && (!/\.exe$/i.test(p) || /[\\/]WindowsApps[\\/]/i.test(p))) continue;
+      out.push(p);
+    }
+  }
+  return out;
+}
+
+// ESP-IDF 的 python_env/<x.y_z>_env 里必定带 pyserial（idf_monitor 的依赖），
+// 所以只要用户装过 IDF，就白捡一个可用的解释器。
+function idfVenvPythons() {
+  const out = [];
+  const roots = [process.env.IDF_TOOLS_PATH, path.join(os.homedir(), '.espressif')].filter(Boolean);
+  for (const r of roots) {
+    let names;
+    try { names = fs.readdirSync(path.join(r, 'python_env')); } catch (_) { continue; }
+    for (const n of names) {
+      const p = isWin() ? path.join(r, 'python_env', n, 'Scripts', 'python.exe')
+                        : path.join(r, 'python_env', n, 'bin', 'python');
+      try { if (fs.existsSync(p)) out.push(p); } catch (_) {}
+    }
+  }
+  return out;
+}
+
+const PY_PROBE_OPTS = { encoding: 'utf8', timeout: 10000, stdio: ['ignore', 'pipe', 'ignore'] };
+
+// 能 import mod 就返回版本号（没有 __version__ 就返回 'ok'），否则 null
+function probeModule(py, mod) {
+  try {
+    const code = `import ${mod} as m;print(getattr(m,'__version__',''))`;
+    return execFileSync(py, ['-c', code], PY_PROBE_OPTS).trim() || 'ok';
+  } catch (_) { return null; }
+}
+
+// 能当解释器跑起来就返回版本号，否则 null（不看装了哪些包）
+function probePython(py) {
+  try {
+    return execFileSync(py, ['-c', 'import sys;print(sys.version.split()[0])'], PY_PROBE_OPTS).trim() || '?';
+  } catch (_) { return null; }
+}
+
+/** 解释器候选（按优先级去重）；extra 用来插队 */
+function pythonCandidates(extra = []) {
+  const cands = [
+    process.env.ESPMON_PYTHON,          // 显式指定，最高优先级
+    ...extra,
+    venvPythonPath(),                   // 本工具 .venv
+    ...idfVenvPythons(),                // ESP-IDF 自带（必有 pyserial）
+    ...pathPythons(),                   // PATH
+  ];
+  return [...new Set(cands.filter(Boolean))];
+}
+
+/** 找一个「真的 import 得动 mod」的解释器 @returns {{path:string,ver:string}|null} */
+function findPythonWith(mod, extra = []) {
+  for (const py of pythonCandidates(extra)) {
+    if (!fs.existsSync(py) && !/[\\/]/.test(py)) continue;   // 纯命令名交给 PATH 解析
+    const ver = probeModule(py, mod);
+    if (ver) return { path: py, ver };
+  }
+  return null;
+}
+
+function findMonitorPython() { return findPythonWith('serial'); }
+
+/** 拿一个「能跑起来」的解释器去建 venv（不要求它装了什么包） */
+function basePythonForVenv() {
+  for (const py of pythonCandidates()) {
+    if (py.startsWith(MONITOR_VENV)) continue;              // 别拿 .venv 自己重建 .venv
+    if (!fs.existsSync(py) && !/[\\/]/.test(py)) continue;
+    const ver = probePython(py);
+    if (ver) return { path: py, ver };
+  }
+  return null;
+}
+
+/**
+ * 「建 .venv + 装包」的步骤，给 runSteps 用。
+ * 串口监视缺 pyserial、擦除缺 esptool 都走这里，共用一个环境。
+ * @returns 步骤数组；连一个能建 venv 的解释器都没有时返回 null（调用方负责报错）
+ */
+function venvInstallSteps(pkgs, why) {
+  const base = basePythonForVenv();
+  if (!base) return null;
+  const vpy = venvPythonPath();
+  return [
+    { note: `${why}，改用工具自带环境（只装一次）：${MONITOR_VENV}` },
+    { note: `已尝试过：${pythonCandidates().join('  |  ') || '(PATH 里没有 python)'}` },
+    { note: `建 venv 用的解释器：${base.path}  (python ${base.ver})` },
+    { cmd: base.path, args: ['-m', 'venv', MONITOR_VENV], cwd: SELF_DIR, label: '创建 .venv' },
+    { note: '安装依赖（若卡在下载：多半是 pip 源不通，见 pip config list / 可加 -i https://pypi.org/simple）' },
+    { cmd: vpy, args: ['-m', 'pip', 'install', '--disable-pip-version-check', ...pkgs],
+      cwd: SELF_DIR, label: `安装 ${pkgs.join(' ')}` },
+  ];
+}
+
+/** 报错时给人看的「手工修复」命令 */
+function basePythonHint(pkgs = ['pyserial']) {
+  const q = s => (/\s/.test(s) ? `"${s}"` : s);
+  return `${q('<python>')} -m venv ${q(MONITOR_VENV)} && ${q(venvPythonPath())} -m pip install ${pkgs.join(' ')}`;
 }
 
 // ==================================================================
@@ -350,6 +493,9 @@ function runStream(res, opts) {
   // 客户端断开（点"停止"或关页面）→ 杀掉整棵进程树
   res.on('close', () => { if (!child.killed) killTree(child); });
 
+  // 串口监视：登记成「当前可写串口」，供 /api/serial-send 复用同一个句柄
+  if (opts.serialPort) bindSerialChild(res, child, opts.serialPort);
+
   let buf = '';
   child.stdout.on('data', d => { const s = d.toString(); buf += s; sseSend(res, 'out', s); });
   child.stderr.on('data', d => { const s = d.toString(); buf += s; sseSend(res, 'err', s); });
@@ -360,15 +506,131 @@ function runStream(res, opts) {
   });
   child.on('close', code => {
     code = code == null ? 0 : code;
+    if (g_monitor && g_monitor.child === child) {
+      g_monitor = null;
+      sseSend(res, 'sys', '[发送] 串口已关闭');
+    }
     // 兜底：连接/下载失败但退出码为 0 的情况
     if (code === 0 && ESP_FAIL_RE.test(buf)) {
       code = 1;
       sseSend(res, 'err', '[判定] 输出中发现 esptool 失败关键字，按失败处理');
     }
     if (opts.after) { try { opts.after(res, code, buf); } catch (_) {} }
+    // 缺第三方库时给一条能直接抄的命令。arduino-cli 的原始报错只说
+    // "fatal error: xxx.h: No such file or directory"，看不出该装哪个库。
+    if (code !== 0) emitMissingLibHint(res, buf);
     sseSend(res, 'done', { code });
     try { res.end(); } catch (_) {}
   });
+}
+
+// ---- 缺库提示 ------------------------------------------------------
+// 头文件 → 库名的映射只覆盖本仓库真正用到的。没有映射的也能兜住：
+// 用 `arduino-cli lib search` 找 header 对应的库，实在不行给出通用命令。
+const HEADER_TO_LIB = {
+  'WebSocketsServer.h': 'WebSockets',      // Links2004/arduinoWebSockets
+  'WebSocketsClient.h': 'WebSockets',
+  'PubSubClient.h':     'PubSubClient',    // Nick O'Leary
+  'ArduinoJson.h':      'ArduinoJson',
+  'ESPAsyncWebServer.h': 'ESPAsyncWebServer',
+  'AsyncTCP.h':         'AsyncTCP',
+};
+
+function emitMissingLibHint(res, buf) {
+  // 注意必须带 g 标志：matchAll 对非全局正则会抛 TypeError，
+  // 而这里在 close 回调里，抛出去会把后面的 sseSend('done') 和 res.end() 一起吞掉
+  const missing = [...new Set(
+    [...String(buf).matchAll(/fatal error:\s*([A-Za-z0-9_./+-]+\.h(?:pp)?):\s*No such file/gi)]
+      .map(m => m[1].split('/').pop())
+  )];
+  if (!missing.length) return;
+
+  const libs = [...new Set(missing.map(h => HEADER_TO_LIB[h] || null))];
+  sseSend(res, 'err', '[缺库] 找不到头文件：' + missing.join('  '));
+  if (libs.every(Boolean)) {
+    sseSend(res, 'err', '[缺库] 这些都是第三方库，arduino-cli 不会自动装。执行：'
+                      + `arduino-cli lib install ${libs.map(l => `"${l}"`).join(' ')}`);
+  } else {
+    sseSend(res, 'err', '[缺库] 先查库名：arduino-cli lib search <头文件名>'
+                      + '，再 arduino-cli lib install "<库名>"');
+  }
+  sseSend(res, 'err', '[缺库] 装完 arduino-cli lib list 确认，然后重跑编译。'
+                    + '（库装在 <Documents>/Arduino/libraries/，换机器/重装系统后最容易漏这一步）');
+}
+
+/**
+ * 顺序执行多条命令，输出共用一条 SSE 流；某条非 0 退出就停下。
+ * 用于「先建 venv、再装 pyserial、然后直接开始串口监视」这种流水线——
+ * 前端点一次「串口监视」，中间步骤的输出也看得见，最后一步退出才算 done。
+ * @param steps  [{ cmd, args, cwd, label } | { note: 'sse sys 行' }]
+ */
+function runSteps(res, steps) {
+  sseHeaders(res);
+  let i = 0;
+  const finish = code => { sseSend(res, 'done', { code }); try { res.end(); } catch (_) {} };
+  const next = () => {
+    if (i >= steps.length) return finish(0);
+    const st = steps[i++];
+    if (st.note) { sseSend(res, 'sys', st.note); return next(); }
+
+    sseSend(res, 'start', { label: st.label, cmd: st.cmd, args: st.args || [] });
+    let child;
+    try {
+      child = spawn(st.cmd, st.args || [], {
+        cwd: st.cwd || WORKSPACE, env: process.env, windowsHide: true,
+      });
+    } catch (e) {
+      sseSend(res, 'err', 'spawn 失败: ' + e.message);
+      return finish(-1);
+    }
+    res.on('close', () => { if (!child.killed) killTree(child); });
+    if (st.serialPort) bindSerialChild(res, child, st.serialPort);
+    child.stdout.on('data', d => sseSend(res, 'out', d.toString()));
+    child.stderr.on('data', d => sseSend(res, 'err', d.toString()));
+    child.on('error', e => { sseSend(res, 'err', 'spawn 失败: ' + e.message); finish(-1); });
+    child.on('close', code => {
+      if (g_monitor && g_monitor.child === child) {
+        g_monitor = null;
+        sseSend(res, 'sys', '[发送] 串口已关闭');
+      }
+      if (code !== 0) { sseSend(res, 'err', `[失败] 退出码 ${code}`); return finish(code == null ? -1 : code); }
+      next();
+    });
+  };
+  next();
+}
+
+// ==================================================================
+// 串口写方向：网页「发送」→ 监视进程的 stdin → 串口
+// ==================================================================
+// 为什么不能为「发送」单独开一个连接去写串口：
+//   1) ESP32-C3 的 USB Serial/JTAG（HWCDC）一被打开就会复位芯片 ——
+//      DTR/RTS 就是它的复位/BOOT 线。每次发命令重启一遍设备，没法用。
+//   2) Windows 上同一个 COM 口不能被两个句柄同时打开，直接「拒绝访问」。
+// 所以复用监视进程已经打开的那个句柄：把字节写进它的 stdin，
+// 由 tools/serial-monitor.py 里的 stdin 线程原样转给串口。
+let g_monitor = null;          // { child, port } —— 当前活着的串口监视进程
+
+function serialSend(data, newline) {
+  const m = g_monitor;
+  if (!m || !m.child || !m.child.stdin || m.child.stdin.destroyed) {
+    return { ok: false, reason: '没有正在运行的串口监视。先点「串口监视」把端口打开，再发命令。' };
+  }
+  // 行尾由这里决定：AT 固件是「行」解析，只有收到 \r 或 \n 才解析一行；
+  // 但 CIPSEND 阶段要发不带行尾的裸字节，所以做成可关。
+  const payload = Buffer.from(data + (newline ? '\r\n' : ''), 'utf8');
+  try {
+    m.child.stdin.write(payload);
+  } catch (e) {
+    return { ok: false, reason: '写入失败: ' + e.message };
+  }
+  return { ok: true, port: m.port, bytes: payload.length };
+}
+
+/** 登记/注销「当前可写串口」；child 退出时自动注销 */
+function bindSerialChild(res, child, port) {
+  g_monitor = { child, port };
+  sseSend(res, 'sys', `[发送] 已就绪：下方输入框可直接发命令（行尾自动 \\r\\n，可关）`);
 }
 
 // ==================================================================
@@ -585,17 +847,29 @@ const server = http.createServer((req, res) => {
           if (!PORT_RE.test(port)) { sseHeaders(res); sseSend(res, 'err', '串口不合法'); sseSend(res, 'done', { code: -1 }); return res.end(); }
           // arduino-cli 没有独立擦除命令，用 esptool erase_flash
           const esp = which('esptool.py') || which('esptool');
-          const py = which('python3') || which('python');
+          const eraseArgs = ['-m', 'esptool', '--port', port, 'erase_flash'];
           if (esp) {
             return runStream(res, { cmd: esp, args: ['--port', port, 'erase_flash'], cwd: p2.dir, label: '擦除 flash' });
           }
-          if (py) {
-            return runStream(res, { cmd: py, args: ['-m', 'esptool', '--port', port, 'erase_flash'], cwd: p2.dir, label: '擦除 flash' });
+          // esptool 不在 PATH：看哪个解释器装了它（ESP-IDF 的 python_env 里通常有）
+          const withEsp = findPythonWith('esptool');
+          if (withEsp) {
+            return runStream(res, { cmd: withEsp.path, args: eraseArgs, cwd: p2.dir, label: '擦除 flash' });
           }
-          sseHeaders(res);
-          sseSend(res, 'err', '未找到 esptool，无法擦除。可 pip install esptool。');
-          sseSend(res, 'done', { code: -1 });
-          return res.end();
+          // 都没有：装进工具自带 .venv 再擦（与串口监视共用同一个环境）
+          const prep = venvInstallSteps(['esptool'], '未找到 esptool');
+          if (!prep) {
+            sseHeaders(res);
+            sseSend(res, 'err', '未找到 esptool，也没有可用的 Python 来安装它。');
+            sseSend(res, 'err', '解决：pip install esptool；或用 ESPMON_PYTHON 指定一个装了 esptool 的解释器。');
+            sseSend(res, 'done', { code: -1 });
+            return res.end();
+          }
+          return runSteps(res, [
+            ...prep,
+            { note: '依赖就绪，开始擦除…' },
+            { cmd: venvPythonPath(), args: eraseArgs, cwd: p2.dir, label: '擦除 flash' },
+          ]);
         }
         sseHeaders(res); sseSend(res, 'err', '未知操作: ' + op); sseSend(res, 'done', { code: -1 });
         return res.end();
@@ -631,15 +905,47 @@ const server = http.createServer((req, res) => {
       if (!fs.existsSync(MONITOR_SCRIPT)) {
         sseHeaders(res); sseSend(res, 'err', '缺少 tools/serial-monitor.py'); sseSend(res, 'done', { code: -1 }); return res.end();
       }
-      const py = which('python3') || which('python');
-      if (!py) {
-        sseHeaders(res); sseSend(res, 'err', '未找到 python3（串口监视需要 pyserial）'); sseSend(res, 'done', { code: -1 });
+      const monArgs = [MONITOR_SCRIPT, '--port', port, '--baud', baud];
+      const label = `串口监视 ${port}@${baud}`;
+
+      // 1) 首选：找到「真的能 import serial」的解释器，直接开监视
+      const mon = findMonitorPython();
+      if (mon) {
+        return runStream(res, { cmd: mon.path, args: monArgs, cwd: SELF_DIR, label, serialPort: port });
+      }
+
+      // 2) 没找到：在工具目录建 .venv 装一份 pyserial，装完接着开监视。
+      //    只发生一次，之后都走上面的快路径。MONITOR_NO_AUTOINSTALL=1 可关掉。
+      const prep = MONITOR_AUTO_INSTALL ? venvInstallSteps(['pyserial'], '未找到装了 pyserial 的解释器') : null;
+      if (!prep) {
+        sseHeaders(res);
+        sseSend(res, 'err', MONITOR_AUTO_INSTALL ? '没有可用的 Python 解释器，无法自动补 pyserial。'
+                                                 : '没有找到装了 pyserial 的 Python 解释器（已禁用自动安装）。');
+        sseSend(res, 'err', '已尝试：' + (pythonCandidates().join('  |  ') || '(PATH 里没有 python)'));
+        sseSend(res, 'err', '解决：① 安装 Python 3 并勾选 Add to PATH；'
+                          + '② 用 ESPMON_PYTHON=<装了 pyserial 的 python> 指定解释器；'
+                          + `③ 手工执行 ${basePythonHint()}`);
+        sseSend(res, 'done', { code: 3 });
         return res.end();
       }
-      return runStream(res, {
-        cmd: py, args: [MONITOR_SCRIPT, '--port', port, '--baud', baud],
-        cwd: SELF_DIR, label: `串口监视 ${port}@${baud}`,
-      });
+      return runSteps(res, [
+        ...prep,
+        { note: '依赖就绪，开始串口监视…' },
+        { cmd: venvPythonPath(), args: monArgs, cwd: SELF_DIR, label, serialPort: port },
+      ]);
+    }
+
+    // ---- 往正在运行的串口监视发数据（网页「发送」按钮）----
+    // GET /api/serial-send?data=<urlencoded>&nl=1
+    //   data  任意字符串，浏览器侧 encodeURIComponent，可以带换行等控制字符
+    //   nl    是否在末尾补 \r\n（默认补）。AT 固件是「行」解析，必须补；
+    //         但 CIPSEND 之后要发不带行尾的裸字节，那时传 nl=0
+    if (p === '/api/serial-send') {
+      const data = q.get('data') || '';
+      if (data.length > 4096) return sendJSON(res, { ok: false, reason: '单次最多 4096 字符' }, 400);
+      const nlRaw = q.get('nl');
+      const nl = nlRaw == null || nlRaw === '' ? true : !/^(0|false|no|off)$/i.test(nlRaw);
+      return sendJSON(res, serialSend(data, nl));
     }
 
     // ---- 打开工程目录（本机文件管理器） ----
@@ -669,6 +975,9 @@ server.listen(PORT, HOST, () => {
   console.log(`   工程根    ${WORKSPACE}`);
   console.log(`   arduino-cli  ${info.arduinoCli || '(未找到)'}${info.arduinoCliVersion ? '  ' + info.arduinoCliVersion : ''}`);
   console.log(`   ESP-IDF      ${info.idfDir || '(未找到)'}${info.idfVersion ? '  ' + info.idfVersion : ''}`);
+  console.log(`   串口监视     ${info.monitorPython
+    ? `${info.monitorPython}  (pyserial ${info.pyserial})`
+    : '尚无可用解释器，点「串口监视」会先在 .venv 里自动装 pyserial'}`);
   const ps = scanProjects();
   console.log(`   发现工程  ${ps.length} 个: ${ps.map(x => x.name + '(' + x.type + ')').join(', ') || '(无)'}`);
   console.log('========================================');

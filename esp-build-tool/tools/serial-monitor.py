@@ -5,18 +5,65 @@
 为什么不用 idf.py monitor / idf_monitor.py：
     它们要求 stdin 是交互终端（isatty），而服务端是用管道启动子进程的，
     必然报 "Monitor requires standard input to be attached to TTY"。
-    这里只做「把串口输出读出来送给网页」一件事：pyserial 直读，
-    不转发键盘输入、不做地址解码，所以不需要终端。
+    这里自己做两件事，都不需要终端：
+      1) 读方向：pyserial 直读 → stdout → 网页日志
+      2) 写方向：stdin 的字节原样写进串口 → 网页「发送」输入框
     （代价：日志里的 0x... 地址不会自动解析成函数名）
+
+为什么写方向要复用本进程、而不是另开一个连接直接写串口：
+    ESP32-C3 的 USB Serial/JTAG（HWCDC）一被打开就会复位芯片，DTR/RTS
+    就是它的复位/BOOT 线。另开连接 = 每次发命令都把设备重启一次，
+    而且两个进程同时开同一个 COM 口在 Windows 上直接是「拒绝访问」。
+    所以必须借用这里已经打开的那个句柄 → 走 stdin 管道。
 
 用法：
     python3 serial-monitor.py --port /dev/ttyUSB0 --baud 115200 [--reset]
 
-退出：网页点「停止监视」→ 服务端 killTree 结束本进程；或串口打开/读取失败。
+    stdin 给什么都原样写到串口（行尾不补也不删，由调用方决定）。
+    手动在终端里跑时，输入一行回车就会发出去一行 —— 等于简易 miniterm。
+
+退出：网页点「停止监视」→ 服务端 killTree 结束本进程；或串口打开/读取失败；
+      或 stdin 管道被父进程关闭（写方向随之失效，读方向不受影响）。
 """
 import argparse
+import os
 import sys
+import threading
 import time
+
+
+def stdin_pump(ser) -> None:
+    """把 stdin 上的字节原样、即时转发到串口（独立线程）。
+
+    为什么用 os.read(0, ...) 而不是 sys.stdin.buffer.readline()：
+        readline() 会持有 sys.stdin 那个 BufferedReader 的锁。本线程是
+        daemon，主线程退出（串口读失败 return 4 / 正常 return 0）时它多半
+        还阻塞在 read 上，解释器收尾拿不到那把锁就会：
+            Fatal Python error: _enter_buffered_busy: could not acquire
+            lock for <_io.BufferedReader name='<stdin>'> at shutdown
+            → Segmentation fault，退出码 139
+        服务端就会看到一个 139 而不是真实的 0/4。（本机已复现。）
+        os.read 走原始 fd，不碰那把锁，收尾干净。
+
+    为什么读到就写、不做行缓冲：
+        串口是字节流，"行"是上层概念。攒到 \\n 才发会**卡住裸字节**——
+        网页发 nl=0（AT+CIPSEND 提示 '>' 之后要发定长数据）时没有换行符，
+        旧写法会一直 hold 到下一次写入才吐出去。收到即写，两种用法都对。
+        行尾由调用方决定（网页端默认 data + "\\r\\n"），这里不补不删。
+    """
+    while True:
+        try:
+            chunk = os.read(0, 512)
+        except Exception:
+            return                          # 管道异常 / 句柄不可读，安静退出
+        if not chunk:
+            return                          # 父进程关掉了管道（进程要收尾了）
+        try:
+            ser.write(chunk)
+            ser.flush()
+        except Exception as e:
+            print('[monitor] 写串口失败：%s' % e, flush=True)
+            return
 
 
 def main() -> int:
@@ -38,8 +85,11 @@ def main() -> int:
     try:
         import serial
     except ImportError:
-        print('[monitor] 缺少 pyserial。请安装：pip install pyserial', flush=True)
-        print('[monitor] （若用 ESP-IDF，其自带 venv 里已包含，用那个 python 运行即可）', flush=True)
+        # 正常路径下走到这里说明 server.js 的解释器探测/自动安装都失败了，
+        # 所以这里给的消息是"手工兜底"用的。
+        print('[monitor] 当前解释器缺 pyserial：%s' % sys.executable, flush=True)
+        print('[monitor] 手工修：%s -m pip install pyserial' % sys.executable, flush=True)
+        print('[monitor] 若用 ESP-IDF，其自带 venv 里有，可设 ESPMON_PYTHON 指过去', flush=True)
         return 3
 
     try:
@@ -72,6 +122,9 @@ def main() -> int:
 
     print('[monitor] 已打开 %s @ %d（pyserial %s）；点「停止监视」结束'
           % (args.port, args.baud, getattr(serial, '__version__', '?')), flush=True)
+
+    # 写方向：daemon 线程，主循环退出时自动结束
+    threading.Thread(target=stdin_pump, args=(ser,), daemon=True).start()
 
     buf = b''
     try:

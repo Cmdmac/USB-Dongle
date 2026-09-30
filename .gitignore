@@ -90,6 +90,8 @@ node_modules/
 # ---------- Python（esp-build-tool/tools/serial-monitor.py）----------
 __pycache__/
 *.pyc
+# 串口监视用的工具级 venv（缺 pyserial 时由 server.js 自动创建）
+.venv/
 
 # ---------- macOS ----------
 .DS_Store
