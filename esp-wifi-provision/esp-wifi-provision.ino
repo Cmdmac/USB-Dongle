@@ -46,7 +46,7 @@
 #define FW_NAME              "esp-wifi-provision"  // 页面标题用
 #define FW_VERSION           "1.0.0"
 
-#define AP_SSID_PREFIX       "ESP-Config-"  // 热点前缀，后接 MAC 后两字节（如 ESP-Config-1A2B）
+#define AP_SSID_PREFIX       "USB-Dongle-"  // 热点前缀，后接 MAC 后两字节（如 USB-Dongle-2B3C）
 #define AP_PASSWORD          "12345678"     // 至少 8 位；留空字符串则开开放热点
 #define AP_CHANNEL           1
 #define AP_MAX_CLIENTS       4
@@ -372,7 +372,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
   <div class="st">
     模式: <b id="mode">读取中...</b><br>
     IP: <b id="ip">-</b><br>
-    已连网络: <b id="ssid">-</b><span id="rssi"></span><br>
+    已连网络: <b id="staSsid">-</b><span id="rssi"></span><br>
     管理地址: <b id="mdns">-</b>
   </div>
 </div>
@@ -399,7 +399,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
   </div>
 </div>
 
-<div class="card">
+<div class="card" id="cardForget" style="display:none">
   <a href="#" onclick="forget();return false" style="color:#c33;font-size:14px">
     忘记 Wi-Fi，恢复热点模式</a>
   <div class="hint">清空已保存的凭证，设备重启后重新进入配网热点。</div>
@@ -434,12 +434,15 @@ function refresh(){
   fetch('/api/status').then(function(r){ return r.json(); }).then(function(s){
     $('mode').innerText = s.sta ? '已连接局域网 (STA)' : '配网热点 (AP)';
     $('ip').innerText   = s.ip || '-';
-    $('ssid').innerText = s.ssid || '未连接';
+    $('staSsid').innerText = s.ssid || '未连接';
     $('rssi').innerText = (s.sta && s.rssi) ? ('  ' + s.rssi + ' dBm') : '';
     $('mdns').innerText = s.mdns || '-';
     $('fw').innerText   = s.fw;
     $('mver').innerText = s.chip;
     $('suffix').innerText = s.mac;
+    // 「忘记 Wi-Fi」只在已连上局域网时才有意义：AP 配网模式下并没有凭证可忘，
+    // 摆着只会让人误以为点它能让设备重新配网。连上 STA 后才显示。
+    $('cardForget').style.display = s.sta ? 'block' : 'none';
     if (s.mdns) _mdns = s.mdns;
   }).catch(function(){});
 }

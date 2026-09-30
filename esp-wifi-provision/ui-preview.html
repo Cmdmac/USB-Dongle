@@ -64,7 +64,7 @@
   <div class="st">
     模式: <b id="mode">读取中...</b><br>
     IP: <b id="ip">-</b><br>
-    已连网络: <b id="ssid">-</b><span id="rssi"></span><br>
+    已连网络: <b id="staSsid">-</b><span id="rssi"></span><br>
     管理地址: <b id="mdns">-</b>
   </div>
 </div>
@@ -91,7 +91,7 @@
   </div>
 </div>
 
-<div class="card">
+<div class="card" id="cardForget" style="display:none">
   <a href="#" onclick="forget();return false" style="color:#c33;font-size:14px">
     忘记 Wi-Fi，恢复热点模式</a>
   <div class="hint">清空已保存的凭证，设备重启后重新进入配网热点。</div>
@@ -185,12 +185,15 @@ function refresh(){
   fetch('/api/status').then(function(r){ return r.json(); }).then(function(s){
     $('mode').innerText = s.sta ? '已连接局域网 (STA)' : '配网热点 (AP)';
     $('ip').innerText   = s.ip || '-';
-    $('ssid').innerText = s.ssid || '未连接';
+    $('staSsid').innerText = s.ssid || '未连接';
     $('rssi').innerText = (s.sta && s.rssi) ? ('  ' + s.rssi + ' dBm') : '';
     $('mdns').innerText = s.mdns || '-';
     $('fw').innerText   = s.fw;
     $('mver').innerText = s.chip;
     $('suffix').innerText = s.mac;
+    // 「忘记 Wi-Fi」只在已连上局域网时才有意义：AP 配网模式下并没有凭证可忘，
+    // 摆着只会让人误以为点它能让设备重新配网。连上 STA 后才显示。
+    $('cardForget').style.display = s.sta ? 'block' : 'none';
     if (s.mdns) _mdns = s.mdns;
   }).catch(function(){});
 }
