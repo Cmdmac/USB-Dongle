@@ -5,3 +5,8 @@
 # 字节错位。中文提示一律交给被调用的 python 打印。
 *.bat text eol=crlf
 *.cmd text eol=crlf
+
+# 二进制资源一律禁止任何转换：本机 core.autocrlf=true，若日后有人打开 text=auto，
+# 被误判成文本的 PDF/PNG 会在入库时被改写换行、彻底损坏。显式钉死最省事。
+*.pdf binary
+*.png binary

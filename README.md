@@ -34,6 +34,16 @@ start.bat           # Windows
 
 ---
 
+## 原理图
+
+[`hardware/USB-Dongle-C3-schematic-V1.0.pdf`](hardware/USB-Dongle-C3-schematic-V1.0.pdf)
+
+嘉立创 EDA 导出，A4 单页，**V1.0**（更新于 2026-10-06）。
+
+与固件对得上的几处：主控 **ESP32-C3FN4**、40 MHz 晶振、USB `D+`/`D−` **直连主控内置的 USB Serial/JTAG**（板上没有外部 USB-PHY，所以也解释了为什么做不成 RNDIS 网卡）、5 V 经 LDO 转 3.3 V、`EN`/`BOOT` 各带 10 kΩ 上拉。
+
+---
+
 ## 硬件能力边界（选这块芯片前先看这里）
 
 ESP32-C3 的 USB 是 **USB Serial/JTAG 控制器（固定功能的 CDC-ACM + JTAG）**，**不是 USB OTG**：
