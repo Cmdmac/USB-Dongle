@@ -1,0 +1,1484 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ESP32-C3 BLE 扫描器</title>
+<style>
+  *{box-sizing:border-box}
+  body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+       margin:0;padding:18px;background:#f4f5f7;color:#1f2328;font-size:14px}
+  .wrap{max-width:1180px;margin:0 auto}
+  h1{font-size:20px;margin:0 0 6px}
+  h3{font-size:15px;margin:0 0 8px}
+  .env{font-size:12px;color:#6b7280;line-height:1.8;margin-bottom:14px}
+  .env code{background:#e8eaee;padding:1px 5px;border-radius:4px;font-size:11px}
+  .ok{color:#15803d}.bad{color:#b91c1c}.warn{color:#b45309}
+  .card{background:#fff;border-radius:12px;padding:16px;margin-bottom:14px;
+        box-shadow:0 1px 3px rgba(0,0,0,.07)}
+  .row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+  .row:last-child{margin-bottom:0}
+  label{font-size:12px;color:#6b7280}
+  input,select{padding:8px 10px;border:1px solid #d5d9e0;border-radius:8px;font-size:14px;
+               background:#fff;font-family:inherit}
+  input{width:120px}
+  input.wide{width:280px}
+  button{padding:9px 16px;border:0;border-radius:8px;background:#2b6cff;color:#fff;
+         font-size:14px;cursor:pointer;font-family:inherit}
+  button.sec{background:#e9ecf1;color:#333}
+  button.danger{background:#e05252}
+  button.sm{padding:5px 11px;font-size:12px}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .badge{font-size:11px;padding:3px 9px;border-radius:10px;background:#eef;color:#335}
+  .badge.on{background:#dcfce7;color:#15803d}
+  .badge.off{background:#fee2e2;color:#b91c1c}
+  .badge.idle{background:#eef;color:#6b7280}
+  .muted{color:#8a919c;font-size:12px}
+  .tip{font-size:12px;color:#8a919c;line-height:1.7;margin-top:8px}
+  .tip code{background:#eef0f3;padding:1px 5px;border-radius:4px}
+  table{width:100%;border-collapse:collapse;margin-top:6px}
+  th,td{padding:8px 10px;border-bottom:1px solid #f0f1f4;font-size:13px;text-align:left;
+        font-family:-apple-system,"PingFang SC",sans-serif}
+  th{color:#6b7280;font-weight:600;background:#fafbfc}
+  td.mac,td.adv{font-family:Menlo,Consolas,monospace;font-size:12px}
+  td.rssi{font-family:Menlo,Consolas,monospace}
+  tbody tr:hover{background:#f8f9fb}
+  tbody tr.new{animation:flash .8s ease-out}
+  tbody tr.sel{background:#eef4ff!important;outline:1px solid #bcdcff}
+  @keyframes flash{0%{background:#fef9c3}100%{background:transparent}}
+  #log{background:#12151a;color:#cdd6e0;border-radius:8px;padding:12px;margin:8px 0 0;
+       height:280px;overflow:auto;white-space:pre-wrap;word-break:break-all;
+       font:12px/1.55 Menlo,Consolas,monospace}
+  #log .err{color:#ff7b72}
+  #log .sys{color:#79c0ff}
+  #log .ok{color:#7ee787}
+  #log .cmd{color:#d2a8ff}
+  #log .scan{color:#ffa657}
+  #log .rsp{color:#cdd6e0}
+  #log .gatt{color:#56d4dd}
+  .stat{font-size:12px;color:#6b7280}
+  .stat b{color:#1f2328}
+  .chk{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:#6b7280;
+       cursor:pointer;user-select:none}
+  .chk input{width:auto;padding:0;margin:0}
+  /* 详情面板 */
+  .detail{margin-top:14px;border-top:2px solid #eef0f3;padding-top:12px}
+  .detail h4{margin:0 0 8px;font-size:14px;color:#334}
+  .detail .grid{display:grid;grid-template-columns:160px 1fr;gap:4px 12px;font-size:13px}
+  .detail .grid .k{color:#6b7280}
+  .detail .grid .v{font-family:Menlo,Consolas,monospace;font-size:12px;word-break:break-all}
+  .detail .segs{margin-top:10px}
+  .detail .seg{background:#f8f9fb;border-radius:6px;padding:8px 10px;margin-bottom:6px;font-size:12px}
+  .detail .seg b{color:#334}
+  .detail .seg .hex{font-family:Menlo,Consolas,monospace;color:#555;word-break:break-all}
+  .detail .rssi-chart{margin-top:10px}
+  .detail canvas{background:#fafbfc;border:1px solid #eef0f3;border-radius:6px;display:block}
+  /* RSSI 折线图通用 */
+  canvas.rssiMini{display:block;background:transparent;vertical-align:middle}
+  /* GATT 树 */
+  .gatt{margin-top:14px;border-top:2px solid #eef0f3;padding-top:12px}
+  .gatt h4{margin:0 0 8px;font-size:14px;color:#334}
+  .gatt .conn-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+  .gatt .svc{background:#f8f9fb;border-radius:6px;padding:8px 10px;margin-bottom:6px}
+  .gatt .svc-h{font-size:13px;color:#334;cursor:pointer;user-select:none}
+  .gatt .svc-h b{font-family:Menlo,Consolas,monospace}
+  .gatt .svc-h .rng{color:#6b7280;font-size:11px;margin-left:8px}
+  .gatt .chr{margin:6px 0 0 14px;padding:6px 8px;background:#fff;border:1px solid #eef0f3;border-radius:5px;font-size:12px}
+  .gatt .chr-h{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .gatt .chr-h b{font-family:Menlo,Consolas,monospace}
+  .gatt .chr-h .h{color:#6b7280}
+  .gatt .chr .body{margin-top:5px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .gatt .chr .body input{flex:1;min-width:120px;font-family:Menlo,Consolas,monospace;font-size:11px;padding:3px 6px;border:1px solid #d0d5dd;border-radius:4px}
+  .gatt .chr .val{font-family:Menlo,Consolas,monospace;color:#333;word-break:break-all;background:#f4f6f9;padding:2px 6px;border-radius:3px}
+  .gatt .badge{display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;color:#fff}
+  .gatt .b.r{background:#2b6cff}.gatt .b.w{background:#e67e22}.gatt .b.wn{background:#e67e22;opacity:.65}
+  .gatt .b.n{background:#27ae60}.gatt .b.i{background:#16a085}.gatt .b.dummy{background:#aaa}
+  .gatt .descs{margin:4px 0 0 14px;font-size:11px;color:#6b7280}
+  .gatt .descs .d{font-family:Menlo,Consolas,monospace}
+  .gatt .notif-log{margin-top:10px;background:#fafbfc;border:1px solid #eef0f3;border-radius:6px;padding:8px 10px;font-size:11px;font-family:Menlo,Consolas,monospace;max-height:160px;overflow:auto}
+  .gatt .notif-log .ln{color:#27ae60}.gatt .notif-log .lt{color:#888}
+  .gatt .btn{padding:2px 8px;font-size:11px;border:1px solid #d0d5dd;border-radius:4px;background:#fff;cursor:pointer}
+  .gatt .btn:hover{background:#f0f4ff}
+  .gatt .btn.danger{color:#c0392b}
+  .gatt .muted{color:#999}
+</style>
+</head>
+<body><div class="wrap">
+
+  <h1>ESP32-C3 BLE 扫描器</h1>
+  <div class="env">
+    上位机本地网页。用 <b>Web Serial API</b> 直接从浏览器连接 ESP32-C3 的 USB-CDC 口，
+    发 AT 指令控制 BLE 扫描，实时解析 <code>+BLESCAN:</code> 上报并按 MAC 去重展示。<br>
+    浏览器要求：Chrome / Edge / Opera 桌面版 89+（Web Serial）。
+    直接双击本文件打开即可；若 <code>file://</code> 下连不上，
+    可在同目录跑 <code>python3 -m http.server 8000</code> 后访问 <code>http://localhost:8000/</code>。
+  </div>
+
+  <!-- 连接 -->
+  <div class="card">
+    <div class="row">
+      <label>串口</label>
+      <button id="bConn" onclick="onConnect()">连接设备</button>
+      <button id="bDisc" class="sec" onclick="onDisconnect()" disabled>断开</button>
+      <span class="badge off" id="connBadge">未连接</span>
+      <span class="muted" id="portInfo"></span>
+    </div>
+    <div class="row">
+      <label>波特率</label>
+      <input id="baud" value="115200" style="width:96px">
+      <span class="muted">USB-CDC 不按波特率传，填多少都一样</span>
+    </div>
+    <div class="tip">
+      点「连接设备」时浏览器会弹一个端口选择对话框，认 <b>VID:PID = 303A:1001</b>（Espressif USB Serial/JTAG）。
+    </div>
+  </div>
+
+  <!-- BLE 控制 -->
+  <div class="card">
+    <h3>BLE 扫描控制</h3>
+    <div class="row">
+      <button id="bInit" onclick="sendCmd('AT+BLEINIT=1')" disabled>初始化 BLE (AT+BLEINIT=1)</button>
+      <button class="sec sm" onclick="sendCmd('AT+BLEINIT=0')" id="bDeinit" disabled>deinit</button>
+      <button class="sec sm" onclick="sendCmd('AT+BLEINIT?')" disabled>查询</button>
+    </div>
+    <div class="row">
+      <button id="bScan" onclick="onStartScan()" disabled>开始扫描</button>
+      <label>时长(秒)</label>
+      <input id="dur" value="10" style="width:72px">
+      <span class="muted">0 = 持续到手动停止</span>
+      <button id="bStop" class="danger" onclick="sendCmd('AT+BLESCAN=0')" disabled>停止扫描</button>
+      <button class="sec sm" onclick="sendCmd('AT+BLESCANRSL')" id="bRsl" disabled>导出缓存</button>
+      <button class="sec sm" onclick="clearDevices()">清空列表</button>
+    </div>
+    <div class="tip">
+      典型流程：<code>连接</code> → <code>AT+BLEINIT=1</code> → <code>开始扫描</code>。
+      扫描期间每收到一条广播，下方表格就追加/更新一行；定时扫描结束设备会自动发 <code>+BLESCAN:done</code>。
+    </div>
+  </div>
+
+  <!-- 自定义命令 -->
+  <div class="card">
+    <h3>自定义 AT 命令</h3>
+    <div class="row">
+      <input id="cmd" class="wide" placeholder="如：AT+GMR / AT+BLESCANPARM=1,160,160"
+             onkeydown="if(event.key==='Enter')onSendCustom()">
+      <button id="bSend" onclick="onSendCustom()" disabled>发送</button>
+      <label class="chk" title="AT 固件按行解析，必须补 \\r\\n">
+        <input type="checkbox" id="nl" checked>行尾 \r\n
+      </label>
+    </div>
+  </div>
+
+  <!-- 过滤栏 -->
+  <div class="card">
+    <h3>过滤</h3>
+    <div class="row">
+      <label>名称包含</label>
+      <input id="fName" class="wide" placeholder="大小写不敏感，留空=不过滤" oninput="renderDevices()">
+      <label>MAC 包含</label>
+      <input id="fMac" style="width:180px" placeholder="如 AA:BB 或 aabb" oninput="renderDevices()">
+      <label>RSSI ≥</label>
+      <input id="fRssi" style="width:72px" placeholder="-90" oninput="renderDevices()">
+      <label class="chk"><input type="checkbox" id="fNameOnly" oninput="renderDevices()">仅有名称</label>
+      <label class="chk"><input type="checkbox" id="fUuidOnly" oninput="renderDevices()">含 Service UUID</label>
+      <button class="sec sm" onclick="clearFilter()">清除过滤</button>
+    </div>
+    <div class="stat" id="filterStat"></div>
+  </div>
+
+  <!-- 设备列表 -->
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <h3 style="margin:0">扫描到的设备（点击行展开详情）</h3>
+      <span class="stat">共 <b id="nDev">0</b> 个 · 累计收到 <b id="nHit">0</b> 条广播 · 显示 <b id="nShown">0</b></span>
+    </div>
+    <table id="devs">
+      <thead><tr>
+        <th>#</th><th>MAC</th><th>类型</th><th>RSSI</th><th>名称</th><th>UUID / 厂商</th><th>更新</th>
+      </tr></thead>
+      <tbody id="devBody"><tr><td colspan="7" class="muted">尚无数据</td></tr></tbody>
+    </table>
+    <div id="detailPanel"></div>
+  </div>
+
+  <!-- AT 日志 -->
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <h3 style="margin:0">AT 日志</h3>
+      <span>
+        <label class="chk"><input type="checkbox" id="autoscroll" checked>自动滚动</label>
+        <button class="sec sm" onclick="clearLog()">清空</button>
+      </span>
+    </div>
+    <pre id="log"></pre>
+  </div>
+
+</div>
+<script>
+var $ = function (id) { return document.getElementById(id); };
+
+// Web Serial 状态
+var port = null;
+var reader = null;
+var writer = null;
+var readableClosed = null;
+var writableClosed = null;
+var enc = new TextEncoder();
+var dec = new TextDecoder();
+var rxbuf = '';
+var connected = false;
+
+// 设备表（按 MAC 去重）
+// devMap: mac -> { mac, type, rssi, name, adv, parsed, last, idx, hits, fresh, rssiHist: [{t, rssi}] }
+var devMap = new Map();
+var devOrder = [];
+var hitCount = 0;
+var selectedMac = null;     // 当前展开详情的 MAC
+
+// GATT 连接状态（BLE 设备级，区别于上面的 connected=串口连接）
+// gattState.services: [{ uuid, startH, chrs:[{vHandle, cccdHandle?, uuid, props, name?, lastRead?, lastReadHex?, input, descs:[{handle, uuid}]}] }]
+// gattState.notifLog: [{ t, handle, hex }]
+var gattState = { connected:false, mac:'', addrType:0, services:[], notifLog:[], discDone:false, discRunning:false };
+
+// ============================================================================
+//  BLE 广播包（AD Structure）解析
+// ============================================================================
+//  AD format: [len(1)][type(1)][data(len-1)]，连续拼到末尾。
+//  参考：https://www.bluetooth.com/specifications/assigned-numbers/generic-access-profile/
+function hexToBytes(hex) {
+  var b = [];
+  hex = hex.replace(/[^0-9a-fA-F]/g, '');
+  for (var i = 0; i + 1 < hex.length; i += 2) {
+    b.push(parseInt(hex.substr(i, 2), 16));
+  }
+  return b;
+}
+
+function bytesToHex(bytes, sep) {
+  var s = '';
+  for (var i = 0; i < bytes.length; i++) {
+    if (i && sep) s += sep;
+    s += (bytes[i] < 16 ? '0' : '') + bytes[i].toString(16).toUpperCase();
+  }
+  return s;
+}
+
+// 16-bit UUID 反转成标准形式（小端 → 大端）
+function uuid16(bytes) {
+  if (bytes.length < 2) return '';
+  var v = (bytes[1] << 8) | bytes[0];
+  return (v < 0x1000 ? '0' : '') + v.toString(16).toUpperCase();
+}
+
+// 32-bit UUID 反转
+function uuid32(bytes) {
+  if (bytes.length < 4) return '';
+  var v = ((bytes[3] << 24) | (bytes[2] << 16) | (bytes[1] << 8) | bytes[0]) >>> 0;
+  return ('00000000' + v.toString(16).toUpperCase()).slice(-8);
+}
+
+// 128-bit UUID 反转 + 标准格式
+function uuid128(bytes) {
+  if (bytes.length < 16) return '';
+  var hex = bytesToHex(bytes);
+  // 反转成 8-4-4-4-12 标准形式
+  var p1 = hex.substr(0, 8);      // LE → 反转
+  var p2 = hex.substr(8, 4);
+  var p3 = hex.substr(12, 4);
+  var p4 = hex.substr(16, 4);
+  var p5 = hex.substr(20, 12);
+  function rev(s) {
+    var r = '';
+    for (var i = s.length - 2; i >= 0; i -= 2) r += s.substr(i, 2);
+    return r;
+  }
+  return rev(p1) + '-' + rev(p2) + '-' + rev(p3) + '-' + rev(p4) + '-' + rev(p5);
+}
+
+// 已知 16-bit UUID 名字（最常见的一小撮，可扩展）
+var UUID16_NAMES = {
+  '180A': 'Device Information',
+  '180F': 'Battery Service',
+  '180D': 'Heart Rate',
+  '1802': 'Immediate Alert',
+  '1803': 'Link Loss',
+  '1804': 'Tx Power',
+  '1805': 'Current Time Service',
+  '1808': 'Glucose',
+  '1809': 'Health Thermometer',
+  '180E': 'Blood Pressure',
+  '1810': 'Blood Pressure',
+  '1811': 'Alert Notification',
+  '1812': 'Human Interface Device',
+  '1813': 'Scan Parameters',
+  '1814': 'Running Speed and Cadence',
+  '1815': 'Automation IO',
+  '1816': 'Cycling Speed and Cadence',
+  '1818': 'Cycling Power',
+  '1819': 'Location and Navigation',
+  '181A': 'Environmental Sensing',
+  '181B': 'Body Composition',
+  '181C': 'User Data',
+  '181D': 'Weight Scale',
+  '181E': 'Bond Management',
+  '181F': 'Continuous Glucose Monitoring',
+  '1820': 'Internet Protocol Support',
+  '1821': 'Indoor Positioning',
+  '1822': 'Pulse Oximeter',
+  '1823': 'HTTP Proxy',
+  '1824': 'Transport Discovery',
+  '1825': 'Object Transfer',
+  '1826': 'Fitness Machine',
+  '1827': 'Mesh Provisioning',
+  '1828': 'Mesh Proxy',
+  'FE9F': 'Google',
+  'FEB2': 'Apple Continuity',
+  'FEA9': 'Apple Nearby',
+  '004C': 'Apple',
+  '000C': 'Apple',
+};
+
+// 已知厂商 Company ID（一小部分）
+var COMPANY_IDS = {
+  '004C': 'Apple Inc.',
+  '000C': 'Apple Inc.',
+  '000F': 'Broadcom',
+  '000A': 'Qualcomm',
+  '0001': 'Nokia Mobile Phones',
+  '0006': 'Microsoft',
+  '0078': 'Realtek',
+  '0075': 'Samsung Electronics',
+  '007A': 'Nordic Semiconductor',
+  '0059': 'Nordic Semiconductor',
+  '011A': 'Espressif',
+  '00E0': 'Google',
+  '0139': 'Huawei',
+  '0161': 'Xiaomi',
+  '0179': 'Jiangxi Yunding Technology',
+  '0187': 'Jiangxi Tengzhixin Electronic Technology',
+  '0219': 'Vivo',
+  '027D': 'OPPO',
+};
+
+function adTypeName(t) {
+  var names = {
+    0x01: 'Flags',
+    0x02: '16-bit Service UUIDs (incomplete)',
+    0x03: '16-bit Service UUIDs (complete)',
+    0x04: '32-bit Service UUIDs (incomplete)',
+    0x05: '32-bit Service UUIDs (complete)',
+    0x06: '128-bit Service UUIDs (incomplete)',
+    0x07: '128-bit Service UUIDs (complete)',
+    0x08: 'Shortened Local Name',
+    0x09: 'Complete Local Name',
+    0x0A: 'Tx Power Level',
+    0x0B: 'Class of Device',
+    0x0C: 'Simple Pairing Hash C-192',
+    0x0D: 'Simple Pairing Randomizer R-192',
+    0x0E: 'Device ID',
+    0x0F: 'Security Manager TK Value',
+    0x10: 'Security Manager Out of Band Flags',
+    0x11: 'Slave Connection Interval Range',
+    0x12: 'List of 16-bit Service Solicitation UUIDs',
+    0x13: 'List of 128-bit Service Solicitation UUIDs',
+    0x14: 'Service Data - 16-bit UUID',
+    0x15: 'Service Data - 128-bit UUID',
+    0x16: 'Service Data - 16-bit UUID',
+    0x17: 'Public Target Address',
+    0x18: 'Random Target Address',
+    0x19: 'Appearance',
+    0x1A: 'Advertising Interval',
+    0x1B: 'LE Bluetooth Device Address',
+    0x1C: 'LE Role',
+    0x1D: 'Simple Pairing Hash C-256',
+    0x1E: 'Simple Pairing Randomizer R-256',
+    0x1F: 'List of 32-bit Service Solicitation UUIDs',
+    0x20: 'Service Data - 32-bit UUID',
+    0x21: 'Service Data - 32-bit UUID',
+    0x22: 'LE Secure Connections Confirmation Value',
+    0x23: 'LE Secure Connections Random Value',
+    0x24: 'URI',
+    0x25: 'Indoor Positioning',
+    0x26: 'Transport Discovery Data',
+    0x27: 'LE Supported Features',
+    0x28: 'Channel Map Update',
+    0x29: 'PB-ADV',
+    0x2A: 'Mesh Message',
+    0x2B: 'Mesh Beacon',
+    0x2C: 'BIG Info',
+    0x2D: 'Broadcast Code',
+    0x2E: 'Periodic Advertising Interval',
+    0x2F: 'Advertising Service Data',
+    0x30: '32-bit Service UUIDs (incomplete)',
+    0x31: '32-bit Service UUIDs (complete)',
+    0x3C: '32-bit Service Data',
+    0x3D: '128-bit Service Data',
+    0xFF: 'Manufacturer Specific Data',
+  };
+  return names[t] || ('Unknown (0x' + t.toString(16).toUpperCase() + ')');
+}
+
+// 解析广播数据 hex 字符串，返回结构化对象
+// 返回: { flags, name, txPower, uuids:[{type,uuid,name}], appearance, advInterval,
+//         svcData:[{uuid,name,data}], mfgr:{cidHex,company,data}, raw:[{type,name,dataHex}] }
+function parseAdv(hex) {
+  var out = { flags: null, name: '', txPower: null, uuids: [],
+              appearance: null, advInterval: null,
+              svcData: [], mfgr: null, raw: [] };
+  if (!hex) return out;
+  var bytes = hexToBytes(hex);
+  var i = 0;
+  while (i < bytes.length) {
+    var len = bytes[i++];
+    if (len === 0) break;
+    if (i + len > bytes.length) break;     // 截断
+    var type = bytes[i];
+    var data = bytes.slice(i + 1, i + len);
+    i += len;
+    var seg = { type: type, name: adTypeName(type), dataHex: bytesToHex(data) };
+    out.raw.push(seg);
+
+    switch (type) {
+      case 0x01: // Flags
+        if (data.length >= 1) out.flags = data[0];
+        break;
+      case 0x08: case 0x09: // Shortened/Complete Local Name
+        out.name = data.map(function (c) {
+          return c >= 32 && c < 127 ? String.fromCharCode(c) : '.';
+        }).join('');
+        break;
+      case 0x0A: // Tx Power
+        if (data.length >= 1) out.txPower = (data[0] > 127 ? data[0] - 256 : data[0]);
+        break;
+      case 0x02: case 0x03: // 16-bit UUIDs
+        for (var j = 0; j + 1 < data.length; j += 2) {
+          var u = uuid16(data.slice(j, j + 2));
+          out.uuids.push({ type: '16', uuid: u, name: UUID16_NAMES[u] || '' });
+        }
+        break;
+      case 0x04: case 0x05: // 32-bit UUIDs
+        for (var j = 0; j + 3 < data.length; j += 4) {
+          var u = uuid32(data.slice(j, j + 4));
+          out.uuids.push({ type: '32', uuid: u, name: UUID16_NAMES[u] || '' });
+        }
+        break;
+      case 0x06: case 0x07: // 128-bit UUIDs
+        for (var j = 0; j + 15 < data.length; j += 16) {
+          var u = uuid128(data.slice(j, j + 16));
+          out.uuids.push({ type: '128', uuid: u, name: '' });
+        }
+        break;
+      case 0x19: // Appearance
+        if (data.length >= 2) out.appearance = (data[1] << 8) | data[0];
+        break;
+      case 0x1A: // Advertising Interval
+        if (data.length >= 2) out.advInterval = ((data[1] << 8) | data[0]) * 0.625;
+        break;
+      case 0x16: case 0x14: case 0x15: { // Service Data 16-bit
+        if (data.length >= 2) {
+          var u = uuid16(data.slice(0, 2));
+          out.svcData.push({ uuid: u, name: UUID16_NAMES[u] || '', data: bytesToHex(data.slice(2)) });
+        }
+        break;
+      }
+      case 0x20: case 0x21: { // Service Data 32-bit
+        if (data.length >= 4) {
+          var u = uuid32(data.slice(0, 4));
+          out.svcData.push({ uuid: u, name: '', data: bytesToHex(data.slice(4)) });
+        }
+        break;
+      }
+      case 0xFF: { // Manufacturer Specific Data
+        if (data.length >= 2) {
+          var cid = bytesToHex([data[1], data[0]]).toUpperCase(); // LE
+          out.mfgr = {
+            cidHex: '0x' + cid,
+            company: COMPANY_IDS[cid] || '',
+            data: bytesToHex(data.slice(2)),
+          };
+        }
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+// Flags 位含义
+function flagsStr(f) {
+  if (f == null) return '';
+  var bits = [];
+  if (f & 0x01) bits.push('LE Limited Discoverable');
+  if (f & 0x02) bits.push('LE General Discoverable');
+  if (f & 0x04) bits.push('BR/EDR Not Supported');
+  if (f & 0x08) bits.push('Simultaneous LE and BR/EDR to Same Device Capable (Controller)');
+  if (f & 0x10) bits.push('Simultaneous LE and BR/EDR to Same Device Capable (Host)');
+  return bits.join(' | ') || 'none';
+}
+
+// Appearance 表（很简化，只挑常见）
+var APPEARANCE_NAMES = {
+  0x0000: 'Unknown',
+  0x0040: 'Phone',
+  0x0080: 'Computer',
+  0x00C0: 'Watch',
+  0x00C1: 'Watch: Sports',
+  0x0100: 'Clock',
+  0x0140: 'Display',
+  0x0180: 'Remote Control',
+  0x0181: 'Remote Control: Second Screen',
+  0x01C0: 'Eyeglasses',
+  0x0200: 'Tag',
+  0x0240: 'Keyring',
+  0x0280: 'Media Player',
+  0x02C0: 'Barcode Scanner',
+  0x0300: 'Thermometer',
+  0x0301: 'Thermometer: Ear',
+  0x0340: 'Heart Rate Sensor',
+  0x0341: 'Heart Rate Sensor: Belt',
+  0x0380: 'Blood Pressure',
+  0x0381: 'Blood Pressure: Arm',
+  0x0382: 'Blood Pressure: Wrist',
+  0x03C0: 'Human Interface Device',
+  0x03C1: 'Keyboard',
+  0x03C2: 'Mouse',
+  0x03C3: 'Joystick',
+  0x03C4: 'Gamepad',
+  0x03C5: 'Digitizer Tablet',
+  0x03C6: 'Card Reader',
+  0x03C7: 'Digital Pen',
+  0x03C8: 'Barcode Scanner',
+  0x03C9: 'HID: Page 0x05',
+  0x0440: 'Glucose Meter',
+  0x0441: 'Glucose Meter: Arm',
+  0x0480: 'Pulse Oximeter',
+  0x0481: 'Pulse Oximeter: Fingertip',
+  0x0482: 'Pulse Oximeter: Wrist Worn',
+  0x04C0: 'Running / Walking Sensor',
+  0x04C1: 'Running / Walking Sensor: In-Shoe',
+  0x04C2: 'Running / Walking Sensor: On-Shoe',
+  0x04C3: 'Running / Walking Sensor: On-Hip',
+  0x0500: 'Cycling: Bike',
+  0x0501: 'Cycling: Cargo',
+  0x0502: 'Cycling: Activity and Location Display',
+  0x0503: 'Cycling: Activity and Speed Display',
+  0x0504: 'Cycling: Cadence Sensor',
+  0x0505: 'Cycling: Power Sensor',
+  0x0506: 'Cycling: Speed and Cadence Sensor',
+  0x0540: 'Pulse Oximeter: Generic',
+  0x0580: 'Weight Scale',
+  0x05C0: 'Personal Mobility Device',
+  0x05C1: 'Powered Wheelchair',
+  0x05C2: 'Mobility Scooter',
+  0x0600: 'Cycling: Speed Sensor',
+  0x0640: 'Cycling: Cadence Sensor',
+  0x0680: 'Outdoor Sports Activity',
+  0x0700: 'Blood Pressure: Wrist',
+};
+function appearanceStr(a) {
+  if (a == null) return '';
+  return APPEARANCE_NAMES[a] || ('0x' + ('0000' + a.toString(16).toUpperCase()).slice(-4));
+}
+
+// ============================================================================
+//  连接 / 断开
+// ============================================================================
+async function onConnect() {
+  if (!('serial' in navigator)) {
+    appendLog('err', '当前浏览器不支持 Web Serial API。请用 Chrome / Edge / Opera 桌面版 89+。');
+    return;
+  }
+  try {
+    port = await navigator.serial.requestPort();
+    var baud = parseInt($('baud').value, 10) || 115200;
+    await port.open({ baudRate: baud });
+    connected = true;
+    setConnUI(true);
+    appendLog('sys', '已打开串口 @ ' + baud);
+    readableClosed = port.readable.getReader();
+    reader = readableClosed;
+    readLoop();
+    writableClosed = port.writable.getWriter();
+    writer = writableClosed;
+  } catch (e) {
+    appendLog('err', '连接失败：' + e.message);
+    if (port) { try { await port.close(); } catch (_) {} port = null; }
+    connected = false;
+    setConnUI(false);
+  }
+}
+
+async function onDisconnect() {
+  try {
+    if (reader) { reader.cancel(); await readableClosed.catch(function(){}); reader = null; readableClosed = null; }
+    if (writer) { writer.releaseLock(); writer = null; writableClosed = null; }
+    if (port) { await port.close(); }
+  } catch (e) {
+    appendLog('err', '断开时出错：' + e.message);
+  }
+  port = null;
+  connected = false;
+  setConnUI(false);
+  // 串口断了 GATT 状态也清掉
+  gattState.connected = false;
+  gattState.discRunning = false;
+  gattState.services = [];
+  gattState.notifLog = [];
+  renderDetail();
+  appendLog('sys', '已断开');
+}
+
+async function readLoop() {
+  while (reader && port) {
+    var r;
+    try { r = await reader.read(); } catch (e) {
+      appendLog('err', '读取异常：' + e.message);
+      break;
+    }
+    if (r.done) break;
+    if (r.value) {
+      rxbuf += dec.decode(r.value, { stream: true });
+      var i;
+      while ((i = rxbuf.indexOf('\n')) >= 0) {
+        var line = rxbuf.slice(0, i);
+        rxbuf = rxbuf.slice(i + 1);
+        handleLine(line.replace(/\r$/, ''));
+      }
+    }
+  }
+}
+
+function setConnUI(on) {
+  $('bConn').disabled = on;
+  $('bDisc').disabled = !on;
+  var b = $('connBadge');
+  b.className = 'badge ' + (on ? 'on' : 'off');
+  b.textContent = on ? '已连接' : '未连接';
+  ['bInit', 'bDeinit', 'bScan', 'bStop', 'bRsl', 'bSend'].forEach(function (id) {
+    $(id).disabled = !on;
+  });
+  if (on) $('cmd').focus();
+}
+
+// ============================================================================
+//  发送
+// ============================================================================
+async function sendCmd(cmd) {
+  if (!connected || !writer) { appendLog('err', '串口未连接'); return; }
+  var nl = $('nl').checked;
+  var payload = enc.encode(cmd + (nl ? '\r\n' : ''));
+  try { await writer.write(payload); }
+  catch (e) { appendLog('err', '发送失败：' + e.message); return; }
+  appendLog('cmd', '→ ' + cmd + (nl ? ' \\r\\n' : '') + '   (' + payload.length + ' 字节)');
+}
+
+function onSendCustom() {
+  var v = $('cmd').value;
+  if (!v) return;
+  $('cmd').value = '';
+  sendCmd(v);
+}
+
+// ============================================================================
+//  行解析
+// ============================================================================
+function handleLine(line) {
+  if (!line) return;
+  if (line.startsWith('+BLESCAN:') && !line.startsWith('+BLESCAN:done')
+      && !line.startsWith('+BLESCAN:stopped') && !line.startsWith('+BLESCAN:idle')
+      && !line.startsWith('+BLESCAN:busy')) {
+    appendLog('scan', line);
+    parseBleScanLine(line.slice('+BLESCAN:'.length));
+    return;
+  }
+  if (line.startsWith('+BLESCAN:done')) {
+    appendLog('ok', line);
+    return;
+  }
+  if (line.startsWith('+BLESCAN:stopped')) {
+    appendLog('sys', line);
+    return;
+  }
+  // ---- GATT URC ----
+  if (line.startsWith('+BLECONN:')) {
+    appendLog('gatt', line);
+    onUrcBleConn(line.slice('+BLECONN:'.length));
+    return;
+  }
+  if (line.startsWith('+BLEGATTC_SVC:')) {
+    onUrcSvc(line.slice('+BLEGATTC_SVC:'.length));
+    return;
+  }
+  if (line.startsWith('+BLEGATTC_CHR:')) {
+    onUrcChr(line.slice('+BLEGATTC_CHR:'.length));
+    return;
+  }
+  if (line.startsWith('+BLEGATTC_DESC:')) {
+    onUrcDesc(line.slice('+BLEGATTC_DESC:'.length));
+    return;
+  }
+  if (line.startsWith('+BLEGATTC_DISC:done')) {
+    gattState.discRunning = false;
+    gattState.discDone = true;
+    appendLog('gatt', line);
+    renderGatt();
+    return;
+  }
+  if (line.startsWith('+BLEGATTC_READ:')) {
+    onUrcRead(line.slice('+BLEGATTC_READ:'.length));
+    return;
+  }
+  if (line.startsWith('+BLEGATTC_NOTIF:')) {
+    onUrcNotif(line.slice('+BLEGATTC_NOTIF:'.length), false);
+    return;
+  }
+  if (line.startsWith('+BLEGATTC_IND:')) {
+    onUrcNotif(line.slice('+BLEGATTC_IND:'.length), true);
+    return;
+  }
+  if (line === 'OK' || line === 'ERROR') {
+    appendLog(line === 'OK' ? 'ok' : 'err', line);
+    return;
+  }
+  if (line === 'ready') {
+    appendLog('sys', line + '  （设备已就绪）');
+    return;
+  }
+  appendLog('rsp', line);
+}
+
+// 解析 +BLESCAN 后的 payload：<addr_type>,<addr>,<rssi>,<name>,<adv_hex>
+function parseBleScanLine(s) {
+  hitCount++;
+  $('nHit').textContent = hitCount;
+  var parts = [];
+  var i = 0;
+  while (i < s.length) {
+    while (i < s.length && (s[i] === ' ' || s[i] === ',')) i++;
+    if (i >= s.length) break;
+    if (s[i] === '"') {
+      i++;
+      var buf = '';
+      while (i < s.length) {
+        if (s[i] === '\\' && i + 1 < s.length) { buf += s[i + 1]; i += 2; continue; }
+        if (s[i] === '"') { i++; break; }
+        buf += s[i]; i++;
+      }
+      parts.push(buf);
+    } else {
+      var st2 = i;
+      while (i < s.length && s[i] !== ',') i++;
+      parts.push(s.slice(st2, i));
+    }
+    if (s[i] === ',') i++;
+  }
+  var addrType = parts[0] || '0';
+  var mac      = parts[1] || '';
+  var rssi     = parts[2] || '0';
+  var name     = parts[3] || '';
+  var adv      = parts[4] || '';
+  if (!mac) return;
+  upsertDevice(mac, addrType, rssi, name, adv);
+}
+
+function upsertDevice(mac, addrType, rssi, name, adv) {
+  var now = new Date();
+  var hh = pad(now.getHours()) + ':' + pad(now.getMinutes()) + ':' + pad(now.getSeconds());
+  var rssiN = parseInt(rssi, 10) || 0;
+  var existed = devMap.get(mac);
+  if (existed) {
+    existed.type = addrType;
+    existed.rssi = rssi;
+    if (name) existed.name = name;
+    if (adv) {
+      existed.adv = adv;
+      existed.parsed = parseAdv(adv);
+    }
+    existed.last = hh;
+    existed.hits = (existed.hits || 0) + 1;
+    existed.fresh = true;
+    // RSSI 历史最多 120 点（约 2 分钟，每秒 1 条的频率）
+    existed.rssiHist.push({ t: now, rssi: rssiN });
+    if (existed.rssiHist.length > 120) existed.rssiHist.shift();
+  } else {
+    var idx = devOrder.length + 1;
+    devMap.set(mac, {
+      mac: mac, type: addrType, rssi: rssi, name: name, adv: adv,
+      parsed: parseAdv(adv), last: hh, idx: idx, hits: 1, fresh: true,
+      firstSeen: now, rssiHist: [{ t: now, rssi: rssiN }],
+    });
+    devOrder.push(mac);
+  }
+  renderDevices();
+}
+
+function pad(n) { return (n < 10 ? '0' : '') + n; }
+
+// ============================================================================
+//  过滤
+// ============================================================================
+function getFiltered() {
+  var fn = $('fName').value.trim().toLowerCase();
+  var fm = $('fMac').value.trim().toLowerCase().replace(/[^0-9a-f:]/g, '');
+  var fr = parseInt($('fRssi').value, 10);
+  var nameOnly = $('fNameOnly').checked;
+  var uuidOnly = $('fUuidOnly').checked;
+  var out = [];
+  for (var i = 0; i < devOrder.length; i++) {
+    var d = devMap.get(devOrder[i]);
+    if (fn && (d.name || '').toLowerCase().indexOf(fn) < 0) continue;
+    if (fm && d.mac.toLowerCase().indexOf(fm) < 0) continue;
+    if (!isNaN(fr) && parseInt(d.rssi, 10) < fr) continue;
+    if (nameOnly && !d.name) continue;
+    if (uuidOnly && !(d.parsed && d.parsed.uuids.length)) continue;
+    out.push(d);
+  }
+  return out;
+}
+
+function clearFilter() {
+  $('fName').value = '';
+  $('fMac').value = '';
+  $('fRssi').value = '';
+  $('fNameOnly').checked = false;
+  $('fUuidOnly').checked = false;
+  renderDevices();
+}
+
+// ============================================================================
+//  渲染
+// ============================================================================
+function renderDevices() {
+  var body = $('devBody');
+  $('nDev').textContent = devOrder.length;
+  var list = getFiltered();
+  $('nShown').textContent = list.length;
+  $('filterStat').textContent = list.length === devOrder.length
+    ? '' : '过滤后剩 ' + list.length + ' / ' + devOrder.length + ' 个';
+
+  if (!list.length) {
+    body.innerHTML = '<tr><td colspan="7" class="muted">' +
+      (devOrder.length ? '没有符合过滤条件的设备' : '尚无数据') + '</td></tr>';
+    renderDetail();
+    return;
+  }
+  var html = '';
+  for (var i = 0; i < list.length; i++) {
+    var d = list[i];
+    var cls = (d.fresh ? 'new ' : '') + (d.mac === selectedMac ? 'sel' : '');
+    d.fresh = false;
+    var typeStr = ({ '0':'public','1':'random','2':'public-id','3':'random-id' })[d.type] || d.type;
+    var rssiN = parseInt(d.rssi, 10);
+    var rssiColor = rssiN >= -50 ? '#15803d' : rssiN >= -70 ? '#b45309' : '#b91c1c';
+    // UUID / 厂商摘要
+    var summary = [];
+    if (d.parsed) {
+      if (d.parsed.uuids && d.parsed.uuids.length) {
+        var shown = 0;
+        for (var j = 0; j < d.parsed.uuids.length && shown < 3; j++) {
+          var u = d.parsed.uuids[j];
+          summary.push(u.uuid + (u.name ? '(' + u.name + ')' : ''));
+          shown++;
+        }
+        if (d.parsed.uuids.length > 3) summary.push('+' + (d.parsed.uuids.length - 3));
+      }
+      if (d.parsed.mfgr) {
+        summary.push('MFGR:' + d.parsed.mfgr.cidHex +
+          (d.parsed.mfgr.company ? '(' + d.parsed.mfgr.company + ')' : ''));
+      }
+    }
+    html += '<tr class="' + cls + '" onclick="selectDevice(\'' + d.mac + '\')" style="cursor:pointer">'
+      + '<td>' + d.idx + '</td>'
+      + '<td class="mac">' + esc(d.mac) + '</td>'
+      + '<td>' + typeStr + '</td>'
+      + '<td class="rssi" style="color:' + rssiColor + '">' + esc(d.rssi) + ' dBm'
+        + ' <canvas class="rssiMini" width="48" height="14" data-mac="' + d.mac + '"></canvas></td>'
+      + '<td>' + esc(d.name || '(unknown)') + '</td>'
+      + '<td class="adv">' + esc(summary.join('  ') || '') + '</td>'
+      + '<td>' + d.last + ' <span class="muted">×' + (d.hits || 1) + '</span></td>'
+      + '</tr>';
+  }
+  body.innerHTML = html;
+  // 渲染 mini RSSI sparkline
+  var canvases = body.querySelectorAll('canvas.rssiMini');
+  for (var k = 0; k < canvases.length; k++) {
+    drawMiniRssi(canvases[k], devMap.get(canvases[k].dataset.mac));
+  }
+  renderDetail();
+}
+
+function selectDevice(mac) {
+  selectedMac = (selectedMac === mac) ? null : mac;
+  renderDevices();
+}
+
+// 详情面板
+function renderDetail() {
+  var el = $('detailPanel');
+  if (!selectedMac || !devMap.has(selectedMac)) {
+    el.innerHTML = '';
+    return;
+  }
+  var d = devMap.get(selectedMac);
+  var p = d.parsed || parseAdv(d.adv);
+  var typeStr = ({ '0':'public','1':'random','2':'public-id','3':'random-id' })[d.type] || d.type;
+
+  // 字段表
+  var gridHtml = '';
+  function kv(k, v) { gridHtml += '<div class="k">' + esc(k) + '</div><div class="v">' + (v == null || v === '' ? '<span class="muted">—</span>' : esc(v)) + '</div>'; }
+  kv('MAC', d.mac);
+  kv('地址类型', typeStr + ' (' + d.type + ')');
+  kv('当前 RSSI', d.rssi + ' dBm');
+  kv('名称', d.name || '');
+  if (d.parsed && d.parsed.name && d.parsed.name !== d.name) kv('广播包中的名称', d.parsed.name);
+  kv('首次见到', fmtTime(d.firstSeen));
+  kv('最近见到', d.last);
+  kv('累计命中', (d.hits || 1) + ' 次');
+  if (p.txPower != null) kv('Tx Power', p.txPower + ' dBm');
+  if (p.flags != null) kv('Flags', '0x' + ('00' + p.flags.toString(16).toUpperCase()).slice(-2) + ' = ' + flagsStr(p.flags));
+  if (p.appearance != null) kv('Appearance', appearanceStr(p.appearance) + ' (0x' + ('0000' + p.appearance.toString(16).toUpperCase()).slice(-4) + ')');
+  if (p.advInterval != null) kv('广播间隔', p.advInterval.toFixed(2) + ' ms');
+
+  // UUID 段
+  var uuidHtml = '';
+  if (p.uuids && p.uuids.length) {
+    uuidHtml = '<div class="segs"><b>Service UUIDs</b><br>';
+    for (var i = 0; i < p.uuids.length; i++) {
+      var u = p.uuids[i];
+      uuidHtml += '<div class="seg"><b>' + u.uuid + '</b>'
+        + (u.name ? ' — ' + esc(u.name) : '') + ' <span class="muted">(' + u.type + '-bit)</span></div>';
+    }
+    uuidHtml += '</div>';
+  }
+
+  // Service Data 段
+  var svcHtml = '';
+  if (p.svcData && p.svcData.length) {
+    svcHtml = '<div class="segs"><b>Service Data</b><br>';
+    for (var i = 0; i < p.svcData.length; i++) {
+      var s = p.svcData[i];
+      svcHtml += '<div class="seg"><b>' + s.uuid + '</b>'
+        + (s.name ? ' — ' + esc(s.name) : '')
+        + ' <span class="muted">data:</span> <span class="hex">' + esc(s.data || '(empty)') + '</span></div>';
+    }
+    svcHtml += '</div>';
+  }
+
+  // 厂商数据
+  var mfgrHtml = '';
+  if (p.mfgr) {
+    mfgrHtml = '<div class="segs"><b>Manufacturer Specific Data</b><br>'
+      + '<div class="seg"><b>Company ID:</b> ' + p.mfgr.cidHex
+      + (p.mfgr.company ? ' — ' + esc(p.mfgr.company) : '')
+      + '<br><span class="muted">data:</span> <span class="hex">' + esc(p.mfgr.data || '(empty)') + '</span></div></div>';
+  }
+
+  // 全部 AD 段
+  var rawHtml = '';
+  if (p.raw && p.raw.length) {
+    rawHtml = '<div class="segs"><b>所有 AD Structure（' + p.raw.length + ' 段）</b><br>';
+    for (var i = 0; i < p.raw.length; i++) {
+      var seg = p.raw[i];
+      rawHtml += '<div class="seg"><b>Type 0x' + ('00' + seg.type.toString(16).toUpperCase()).slice(-2)
+        + '</b> — ' + esc(seg.name)
+        + '<br><span class="hex">' + esc(seg.dataHex || '(empty)') + '</span></div>';
+    }
+    rawHtml += '</div>';
+  }
+
+  // 原始 hex
+  var rawHexHtml = '<div class="segs"><b>原始广播数据</b><br>'
+    + '<div class="seg"><span class="hex">' + esc(d.adv || '(空)')
+    + '</span><br><span class="muted">' + (d.adv ? d.adv.length / 2 + ' 字节' : '') + '</span></div></div>';
+
+  // RSSI 折线图
+  var chartHtml = '<div class="rssi-chart"><b>RSSI 历史</b>'
+    + '<canvas id="rssiChart" width="640" height="120"></canvas></div>';
+
+  el.innerHTML = '<div class="detail">'
+    + '<h4>设备详情：' + esc(d.name || d.mac) + '</h4>'
+    + '<div class="grid">' + gridHtml + '</div>'
+    + uuidHtml + svcHtml + mfgrHtml + rawHtml + rawHexHtml + chartHtml
+    + '</div>'
+    + renderGattHtml(d);
+
+  // 画 RSSI 折线图
+  var c = $('rssiChart');
+  if (c) drawRssiChart(c, d);
+}
+
+// ============================================================================
+//  GATT Client：连接 / 发现 / 读 / 写 / 订阅
+// ============================================================================
+function renderGattHtml(d) {
+  // 只对当前选中设备、且与已连设备 MAC 一致时才显示「断开」，否则显示「连接」
+  var isConnected = gattState.connected && gattState.mac === d.mac;
+  var html = '<div class="gatt">'
+    + '<h4>GATT Client</h4>'
+    + '<div class="conn-row">';
+  if (!isConnected) {
+    html += '<button class="btn" onclick="bleConnect(\'' + d.mac + '\',' + d.type + ')">连接此设备</button>'
+      + '<span class="muted">连接后会自动发现服务</span>';
+  } else {
+    html += '<span class="badge b r" style="background:#27ae60">已连接</span>'
+      + '<span class="muted">' + esc(gattState.mac) + '</span>';
+    if (gattState.discRunning) {
+      html += '<span class="muted">发现中…</span>';
+    } else if (!gattState.discDone) {
+      html += '<button class="btn" onclick="discAll()">发现服务</button>';
+    } else {
+      html += '<button class="btn" onclick="discAll()">重新发现</button>';
+    }
+    html += '<button class="btn danger" onclick="bleDisconnect()">断开</button>';
+  }
+  html += '</div>';
+  // 服务树
+  if (isConnected && gattState.services.length) {
+    for (var i = 0; i < gattState.services.length; i++) {
+      var s = gattState.services[i];
+      html += '<div class="svc">'
+        + '<div class="svc-h" onclick="this.parentNode.classList.toggle(\'collapsed\')">'
+        + '<b>' + esc(s.uuid) + '</b>'
+        + ' <span class="rng">0x' + hex16(s.startH) + '</span>'
+        + (s.name ? ' — ' + esc(s.name) : '')
+        + '</div>';
+      if (s.chrs && s.chrs.length) {
+        for (var j = 0; j < s.chrs.length; j++) {
+          html += renderChrHtml(s.chrs[j]);
+        }
+      }
+      html += '</div>';
+    }
+  } else if (isConnected && gattState.discDone && !gattState.services.length) {
+    html += '<div class="muted">未发现任何 service</div>';
+  }
+  // Notify 日志
+  if (gattState.notifLog.length) {
+    html += '<div class="notif-log" id="notifLog">';
+    for (var k = 0; k < gattState.notifLog.length; k++) {
+      var n = gattState.notifLog[k];
+      html += '<div><span class="lt">' + n.t + '</span> h=0x' + hex16(n.handle)
+        + ' <span class="ln">' + esc(n.hex) + '</span></div>';
+    }
+    html += '</div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+function renderChrHtml(c) {
+  var badges = '';
+  if (c.props & 0x02) badges += '<span class="badge b r">R</span>';
+  if (c.props & 0x08) badges += '<span class="badge b w">W</span>';
+  if (c.props & 0x04) badges += '<span class="badge b wn">WN</span>';
+  if (c.props & 0x10) badges += '<span class="badge b n">N</span>';
+  if (c.props & 0x20) badges += '<span class="badge b i">I</span>';
+  var h = '<div class="chr">'
+    + '<div class="chr-h"><b>' + esc(c.uuid) + '</b>'
+    + ' <span class="h">h=0x' + hex16(c.vHandle) + '</span>'
+    + ' ' + badges
+    + (c.name ? ' <span class="muted">' + esc(c.name) + '</span>' : '')
+    + '</div>';
+  // 操作区
+  var body = '<div class="body">';
+  if (c.props & 0x02) {
+    body += '<button class="btn" onclick="chrRead(' + c.vHandle + ')">Read</button>';
+    if (c.lastReadHex) body += '<span class="val">' + esc(c.lastReadHex) + '</span>';
+  }
+  if (c.props & 0x08 || c.props & 0x04) {
+    body += '<input id="win' + c.vHandle + '" placeholder="hex 如 0102ff" '
+      + 'onkeydown="if(event.key==\'Enter\')chrWriteKey(' + c.vHandle + ',' + ((c.props & 0x08) ? 'true' : 'false') + ')">';
+    if (c.props & 0x08) body += '<button class="btn" onclick="chrWrite(' + c.vHandle + ',true)">Write</button>';
+    if (c.props & 0x04) body += '<button class="btn" onclick="chrWrite(' + c.vHandle + ',false)">WriteNoRsp</button>';
+  }
+  if (c.props & 0x10 || c.props & 0x20) {
+    body += '<button class="btn" onclick="chrSub(' + c.vHandle + ',' + (c.subscribed ? 'false' : 'true') + ')">'
+      + (c.subscribed ? 'Unsubscribe' : 'Subscribe') + '</button>';
+    if (c.subscribed) body += '<span class="badge b n">订阅中</span>';
+  }
+  body += '</div>';
+  h += body;
+  // 描述符列表
+  if (c.descs && c.descs.length) {
+    h += '<div class="descs">';
+    for (var i = 0; i < c.descs.length; i++) {
+      h += '<div class="d">desc h=0x' + hex16(c.descs[i].handle) + ' ' + esc(c.descs[i].uuid) + '</div>';
+    }
+    h += '</div>';
+  }
+  h += '</div>';
+  return h;
+}
+
+function hex16(n) { return ('0000' + (n >>> 0).toString(16).toUpperCase()).slice(-4); }
+
+// 局部刷新 GATT 区（不动其它详情）
+function renderGatt() {
+  if (!selectedMac || !devMap.has(selectedMac)) return;
+  // 重新渲染整个详情面板（足够简单，性能 OK）
+  renderDetail();
+}
+
+// ---- URC 处理 ----
+function onUrcBleConn(s) {
+  // s 可能：connected,<addr> / disconnected,<addr> / failed / idle / 1,"MAC",t（查询返回）
+  if (s.startsWith('connected')) {
+    var parts = s.split(',');
+    gattState.connected = true;
+    gattState.mac = (parts[1] || '').replace(/"/g, '').toUpperCase();
+    gattState.services = [];
+    gattState.notifLog = [];
+    gattState.discDone = false;
+    // 自动触发发现
+    setTimeout(function(){ sendCmd('AT+BLEGATTC_DISC=all'); gattState.discRunning = true; }, 100);
+    renderGatt();
+  } else if (s.startsWith('disconnected') || s.startsWith('failed')) {
+    gattState.connected = false;
+    gattState.discRunning = false;
+    gattState.services = [];
+    gattState.notifLog = [];
+    renderGatt();
+  }
+  // idle 或查询返回暂时忽略（不影响 UI）
+}
+
+function onUrcSvc(s) {
+  // <startH>,<uuid>（arduino-esp32 3.x 不暴露 endHandle）
+  var p = s.split(',');
+  if (p.length < 2) return;
+  var uuid = p[1].trim();
+  var svc = { startH: parseInt(p[0], 10), uuid: uuid, name: svcName(uuid), chrs: [] };
+  gattState.services.push(svc);
+}
+
+function onUrcChr(s) {
+  // <valueH>,<props>,<uuid>（arduino-esp32 3.x 只给 value handle）
+  var p = s.split(',');
+  if (p.length < 3) return;
+  var vHandle = parseInt(p[0], 10);
+  var uuid = p[2].trim();
+  var chr = {
+    vHandle: vHandle,
+    props: parseInt(p[1], 10),
+    uuid: uuid,
+    name: chrName(uuid),
+    lastReadHex: null,
+    subscribed: false,
+    descs: []
+  };
+  // 没有 endHandle 区间，按发现顺序归属到「最近一个 service」
+  var target = gattState.services.length ? gattState.services[gattState.services.length - 1] : null;
+  if (target) target.chrs.push(chr);
+}
+
+function onUrcDesc(s) {
+  // <handle>,<uuid>
+  var p = s.split(',');
+  if (p.length < 2) return;
+  var handle = parseInt(p[0], 10);
+  var uuid = p[1].trim();
+  // 归属到 vHandle <= handle 的最近 chr（CCCD 紧跟 value handle）
+  for (var i = gattState.services.length - 1; i >= 0; i--) {
+    var s2 = gattState.services[i];
+    if (!s2.chrs || !s2.chrs.length) continue;
+    for (var j = s2.chrs.length - 1; j >= 0; j--) {
+      var c = s2.chrs[j];
+      if (handle > c.vHandle && handle <= c.vHandle + 4) {
+        c.descs.push({ handle: handle, uuid: uuid });
+        if (uuid === '0x2902' || uuid === '00002902-0000-1000-8000-00805f9b34fb') c.cccdHandle = handle;
+        return;
+      }
+    }
+  }
+}
+
+function onUrcRead(s) {
+  // <handle>,<hex>
+  var idx = s.indexOf(',');
+  if (idx < 0) return;
+  var handle = parseInt(s.slice(0, idx), 10);
+  var hex = s.slice(idx + 1).trim();
+  var c = findChrByHandle(handle);
+  if (c) { c.lastReadHex = hex; renderGatt(); }
+}
+
+function onUrcNotif(s, isInd) {
+  // <handle>,<hex>
+  var idx = s.indexOf(',');
+  if (idx < 0) return;
+  var handle = parseInt(s.slice(0, idx), 10);
+  var hex = s.slice(idx + 1).trim();
+  var now = new Date();
+  var t = pad(now.getHours()) + ':' + pad(now.getMinutes()) + ':' + pad(now.getSeconds());
+  gattState.notifLog.push({ t: t, handle: handle, hex: hex });
+  if (gattState.notifLog.length > 100) gattState.notifLog.shift();
+  // 也更新对应 chr 的 lastRead（便于看最新值）
+  var c = findChrByHandle(handle);
+  if (c) c.lastReadHex = hex;
+  renderGatt();
+  // 滚动到底
+  var box = $('notifLog');
+  if (box) box.scrollTop = box.scrollHeight;
+}
+
+function findChrByHandle(handle) {
+  for (var i = 0; i < gattState.services.length; i++) {
+    var s = gattState.services[i];
+    if (!s.chrs) continue;
+    for (var j = 0; j < s.chrs.length; j++) {
+      if (s.chrs[j].vHandle === handle) return s.chrs[j];
+    }
+  }
+  return null;
+}
+
+// ---- 用户操作 ----
+function bleConnect(mac, addrType) {
+  if (!connected) { appendLog('err', '请先连接串口'); return; }
+  gattState.mac = mac.toUpperCase();
+  gattState.addrType = addrType || 0;
+  // 已连到别的设备？先断开
+  if (gattState.connected) {
+    appendLog('sys', '已连接到 ' + gattState.mac + '，先断开');
+    sendCmd('AT+BLECONN=0');
+    setTimeout(function(){ sendCmd('AT+BLECONN=1,' + mac + ',' + (addrType || 0)); }, 300);
+  } else {
+    sendCmd('AT+BLECONN=1,' + mac + ',' + (addrType || 0));
+  }
+}
+
+function bleDisconnect() {
+  sendCmd('AT+BLECONN=0');
+}
+
+function discAll() {
+  gattState.services = [];
+  gattState.notifLog = [];
+  gattState.discDone = false;
+  gattState.discRunning = true;
+  sendCmd('AT+BLEGATTC_DISC=all');
+  renderGatt();
+}
+
+function chrRead(handle) {
+  sendCmd('AT+BLEGATTC_READ=' + handle);
+}
+
+function chrWrite(handle, withResp) {
+  var el = $('win' + handle);
+  if (!el) return;
+  var hex = el.value.trim().replace(/[^0-9a-fA-F]/g, '');
+  if (!hex) { appendLog('err', '请输入 hex'); return; }
+  if (withResp) sendCmd('AT+BLEGATTC_WRITE=' + handle + ',' + hex);
+  else sendCmd('AT+BLEGATTC_WRITENR=' + handle + ',' + hex);
+}
+
+function chrWriteKey(handle, withResp) {
+  chrWrite(handle, withResp);
+}
+
+function chrSub(handle, on) {
+  sendCmd('AT+BLEGATTC_SUB=' + handle + ',' + (on ? 1 : 0));
+  var c = findChrByHandle(handle);
+  if (c) c.subscribed = on;
+  renderGatt();
+}
+
+// ---- UUID 名称表（常用 service / characteristic）----
+var SVC_NAMES = {
+  '0x1800':'Generic Access', '0x1801':'Generic Attribute', '0x180a':'Device Information',
+  '0x180f':'Battery Service', '0x180d':'Heart Rate', '0x1810':'Blood Pressure',
+  '0x1816':'Cycling Speed and Cadence', '0x181a':'Environmental Sensing',
+  '0x181c':'User Data', '0x181f':'Weight Scale', '0xfe9f':'Google',
+  '0xfefe':'Apple Notification Center', '0xffb0':'Vendor Specific'
+};
+var CHR_NAMES = {
+  '0x2a00':'Device Name', '0x2a01':'Appearance', '0x2a04':'Peripheral Preferred Connection Params',
+  '0x2a05':'Service Changed', '0x2a19':'Battery Level', '0x2a29':'Manufacturer Name',
+  '0x2a24':'Model Number', '0x2a25':'Serial Number', '0x2a27':'Firmware Revision',
+  '0x2a26':'Firmware Revision', '0x2a28':'Software Revision', '0x2a37':'Heart Rate Measurement',
+  '0x2a35':'Blood Pressure Measurement', '0x2a1c':'Temperature Measurement'
+};
+function svcName(uuid) {
+  var k = uuid.toLowerCase();
+  return SVC_NAMES[k] || SVC_NAMES[canonical16(uuid)] || null;
+}
+function chrName(uuid) {
+  var k = uuid.toLowerCase();
+  return CHR_NAMES[k] || CHR_NAMES[canonical16(uuid)] || null;
+}
+// 把 128-bit UUID 缩成 0xXXXX（仅对 Bluetooth Base UUID 16-bit 缩位有效）
+function canonical16(uuid) {
+  var u = uuid.toLowerCase().replace(/-/g, '');
+  if (u.length !== 32) return uuid.toLowerCase();
+  var base = '0000xxxx00001000800000805f9b34fb';
+  var idx = base.indexOf('xxxx');
+  var seg = u.substr(idx, 4);
+  if (base.substr(0, idx) === u.substr(0, idx) && base.substr(idx + 4) === u.substr(idx + 4)) {
+    return '0x' + seg;
+  }
+  return uuid.toLowerCase();
+}
+
+function fmtTime(d) {
+  if (!d) return '';
+  return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+}
+
+// mini sparkline
+function drawMiniRssi(canvas, d) {
+  if (!d || !d.rssiHist || !d.rssiHist.length) return;
+  var ctx = canvas.getContext('2d');
+  var w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  var pts = d.rssiHist;
+  var min = -100, max = -30;
+  // 起点对齐左端
+  ctx.strokeStyle = '#2b6cff';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (var i = 0; i < pts.length; i++) {
+    var x = pts.length === 1 ? w / 2 : (i / (pts.length - 1)) * w;
+    var v = pts[i].rssi;
+    v = v < min ? min : (v > max ? max : v);
+    var y = h - ((v - min) / (max - min)) * h;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+// 大 RSSI 折线图
+function drawRssiChart(canvas, d) {
+  var ctx = canvas.getContext('2d');
+  var w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  if (!d.rssiHist || !d.rssiHist.length) return;
+
+  var padL = 36, padR = 8, padT = 10, padB = 18;
+  var cw = w - padL - padR, ch = h - padT - padB;
+
+  // Y 轴：-30 ~ -100 dBm
+  var yMin = -100, yMax = -30;
+  function yOf(v) {
+    v = v < yMin ? yMin : (v > yMax ? yMax : v);
+    return padT + ch - ((v - yMin) / (yMax - yMin)) * ch;
+  }
+  // 网格 + Y 标签
+  ctx.strokeStyle = '#eef0f3';
+  ctx.fillStyle = '#8a919c';
+  ctx.font = '10px Menlo, Consolas, monospace';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  for (var v = -30; v >= -100; v -= 10) {
+    var y = yOf(v);
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
+    ctx.fillText(v + ' dBm', padL - 4, y);
+  }
+
+  // X 轴：时间
+  var pts = d.rssiHist;
+  var t0 = pts[0].t.getTime();
+  var tN = pts[pts.length - 1].t.getTime();
+  if (tN === t0) tN = t0 + 1000;
+  function xOf(t) {
+    return padL + ((t - t0) / (tN - t0)) * cw;
+  }
+
+  // 折线
+  ctx.strokeStyle = '#2b6cff';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (var i = 0; i < pts.length; i++) {
+    var x = xOf(pts[i].t.getTime());
+    var y = yOf(pts[i].rssi);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // 点
+  ctx.fillStyle = '#2b6cff';
+  for (var i = 0; i < pts.length; i++) {
+    var x = xOf(pts[i].t.getTime());
+    var y = yOf(pts[i].rssi);
+    ctx.beginPath(); ctx.arc(x, y, 1.6, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // X 标签（首末）
+  ctx.fillStyle = '#6b7280';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillText(fmtTime(pts[0].t), padL, h - padB + 3);
+  if (pts.length > 1) {
+    ctx.textAlign = 'right';
+    ctx.fillText(fmtTime(pts[pts.length - 1].t), w - padR, h - padB + 3);
+  }
+
+  // 当前 RSSI 文字
+  ctx.fillStyle = '#15803d';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'top';
+  ctx.font = 'bold 11px Menlo, Consolas, monospace';
+  ctx.fillText(pts[pts.length - 1].rssi + ' dBm', w - padR, padT + 2);
+}
+
+function clearDevices() {
+  devMap.clear();
+  devOrder.length = 0;
+  hitCount = 0;
+  selectedMac = null;
+  $('nHit').textContent = '0';
+  renderDevices();
+  appendLog('sys', '已清空设备列表');
+}
+
+// ============================================================================
+//  日志
+// ============================================================================
+function appendLog(cls, text) {
+  var el = $('log');
+  var span = document.createElement('span');
+  span.className = cls;
+  span.textContent = text + '\n';
+  el.appendChild(span);
+  if ($('autoscroll').checked) el.scrollTop = el.scrollHeight;
+  if (el.childNodes.length > 5000) {
+    while (el.childNodes.length > 2500) el.removeChild(el.firstChild);
+  }
+}
+
+function clearLog() {
+  $('log').textContent = '';
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, function (c) {
+    return { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c];
+  });
+}
+
+// ============================================================================
+//  开始扫描（带 BLEINIT 兜底）
+// ============================================================================
+async function onStartScan() {
+  var dur = parseInt($('dur').value, 10);
+  if (isNaN(dur) || dur < 0) { appendLog('err', '时长不合法'); return; }
+  appendLog('sys', '先发 AT+BLEINIT=1 兜底...');
+  await sendCmd('AT+BLEINIT=1');
+  setTimeout(function () {
+    sendCmd('AT+BLESCAN=1,' + dur);
+  }, 300);
+}
+
+window.addEventListener('beforeunload', function () {
+  if (connected) onDisconnect();
+});
+
+appendLog('sys', '就绪。点「连接设备」开始。');
+appendLog('sys', '浏览器要求：Chrome / Edge / Opera 桌面版 89+（Web Serial API）。');
+if (!('serial' in navigator)) {
+  appendLog('err', '当前浏览器不支持 Web Serial API，请换 Chrome / Edge / Opera 桌面版 89+。');
+}
+</script>
+</body></html>

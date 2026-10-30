@@ -13,10 +13,11 @@
 | --- | --- | --- |
 | [`esp32c3-wifi-serial/`](esp32c3-wifi-serial/) | Arduino | **无线串口桥**：把电脑的一个 COM 口透明地变成局域网服务（TCP / Telnet / WebSocket / MQTT 都能接进来），另带网页终端、WOL 唤醒、双分区 OTA（原 ESP-IDF 版已就地重构为 Arduino 单文件） |
 | [`esp32c3-at-cdc/`](esp32c3-at-cdc/) | Arduino | **AT 固件**：把 dongle 变成受 AT 命令控制的「Wi-Fi 猫」，PC 或单片机发文本命令就能联网、收发 TCP/UDP |
+| [`esp32c3-ble-scan/`](esp32c3-ble-scan/) | Arduino | **BLE 调试猫**：把 dongle 变成受 AT 命令控制的 BLE 扫描 + GATT Client（连接/发现/读写/订阅），配套零依赖本地网页上位机（Web Serial 直连、广播包解析、RSSI 折线、GATT 树，体验对标 nRF Connect） |
 | [`esp-wifi-provision/`](esp-wifi-provision/) | Arduino | **Wi-Fi 配网模板**：手机连上热点、填表单换 Wi-Fi，兼容 ESP32 系列与 ESP8266/ESP8285 |
 | [`esp-build-tool/`](esp-build-tool/) | Node.js（零依赖） | **网页版编译/刷写工具**：自动扫描同级目录下的工程，一键切换、编译、烧录、串口监视 |
 
-四个工程放在同一层，`esp-build-tool` 会自己把它们都扫出来。
+五个工程放在同一层，`esp-build-tool` 会自己把它们都扫出来。
 
 ---
 
@@ -58,16 +59,17 @@ ESP32-C3 的 USB 是 **USB Serial/JTAG 控制器（固定功能的 CDC-ACM + JTA
 
 ---
 
-## 三个工程怎么选
+## 各工程怎么选
 
 | 你的场景 | 用哪个 |
 | --- | --- |
 | 老上位机软件只会开 COM 口，但设备在局域网另一头 | `esp32c3-wifi-serial`（透明桥，软件侧零改动） |
 | 上位机（PC 或单片机）想**主动**控制联网，每次连不同目标 | `esp32c3-at-cdc`（AT 命令，对标官方 ESP-AT） |
+| 想把 dongle 当 BLE 调试器（扫描 + GATT 连接/读写/订阅），PC 上有网页直接看 | `esp32c3-ble-scan`（AT 命令 + 本地网页上位机，Web Serial 直连，体验对标 nRF Connect） |
 | 设备第一次上电、要现场填 Wi-Fi 密码 | `esp-wifi-provision`（网页配网） |
 
-`esp32c3-wifi-serial` 与 `esp32c3-at-cdc` 是**两种互斥的产品形态**：前者无协议（透明），后者有协议（AT）。
-不要同时烧，它们是两种模式，不是能叠加的功能。
+`esp32c3-wifi-serial`、`esp32c3-at-cdc`、`esp32c3-ble-scan` 都是**互斥的产品形态**：
+透明桥、Wi-Fi 猫、BLE 调试猫各占一套固件，不要同时烧，它们是三种模式，不是能叠加的功能。
 
 ---
 

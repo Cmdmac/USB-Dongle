@@ -1,0 +1,6 @@
+{
+  "type": "arduino",
+  "fqbn": "esp32:esp32:esp32c3:CDCOnBoot=cdc",
+  "baud": 921600,
+  "verbose": true
+}
