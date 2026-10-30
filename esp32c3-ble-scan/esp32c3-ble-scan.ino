@@ -78,6 +78,11 @@
 #include <BLERemoteDescriptor.h>
 #include <Preferences.h>
 #include <stdarg.h>
+// Wi-Fi 局域网访问（与 USB-CDC 并存）
+#include <WiFi.h>
+#include <WebServer.h>
+#include <ESPmDNS.h>
+#include <WebSocketsServer.h>
 
 // ============================================================================
 //  前置声明
@@ -86,11 +91,43 @@ static void cfgDefaults();
 static void cfgLoad();
 static void cfgSave();
 static void cfgWipe();
+static void feedAtByte(uint8_t c);
+
+// ============================================================================
+//  MultiStream：AT 输出 fanout 到 USB-CDC + 所有 WebSocket 客户端
+// ============================================================================
+static WebSocketsServer g_ws(81);
+static bool g_wsReady = false;
+class MultiStream : public Print {
+public:
+  size_t write(uint8_t c) override {
+    Serial.write(&c, 1);
+    if (g_wsReady) g_ws.broadcastBIN(&c, 1);
+    return 1;
+  }
+  size_t write(const uint8_t *buf, size_t n) override {
+    Serial.write(buf, n);
+    if (g_wsReady) g_ws.broadcastBIN(buf, n);
+    return n;
+  }
+  // Print::print(const char*) 会调 write(const uint8_t*, size_t)，但 const char*
+  // 不能隐式转 const uint8_t*（-fpermissive 下也只是警告）。加一个 char 版本重载。
+  size_t write(const char *buf, size_t n) {
+    return write((const uint8_t *)buf, n);
+  }
+};
+static MultiStream g_atOut;
+// Wi-Fi 状态（声明在此处供 cmdWifi 等前向引用；定义见下方 wifiSetup 区）
+static String g_wifiSsid, g_wifiPass, g_ipStr, g_mdnsUrl;
+static bool   g_wifiSta = false;
 
 // ============================================================================
 //  基本配置
 // ============================================================================
-#define AT_PORT   Serial     // USB Serial/JTAG（CDC）—— 只跑 AT，绝不写日志
+// AT 输出走 MultiStream：同时 fanout 到 USB-CDC + 所有 WebSocket 客户端。
+// 输入方向仍直接读 Serial（USB-CDC），WS 收到的字节在 wsEvent 里喂 feedAtByte。
+// 这样 USB 插电脑、Wi-Fi 局域网访问，两条通道并存且响应互通。
+#define AT_PORT   g_atOut
 #define LOG_PORT  Serial0    // UART0 GPIO20/21 115200 —— 只跑日志
 
 #define FW_NAME       "esp32c3-ble-scan"
@@ -356,6 +393,7 @@ static void cmdBleGattcRead(const char *, bool, bool);
 static void cmdBleGattcWrite(const char *, bool, bool);
 static void cmdBleGattcWriteNr(const char *, bool, bool);
 static void cmdBleGattcSub(const char *, bool, bool);
+static void cmdWifi(const char *, bool, bool);
 
 struct AtCmd {
   const char *name;
@@ -382,6 +420,8 @@ static const AtCmd AT_CMDS[] = {
   { "BLEGATTC_WRITE", cmdBleGattcWrite },
   { "BLEGATTC_WRITENR", cmdBleGattcWriteNr },
   { "BLEGATTC_SUB",   cmdBleGattcSub },
+
+  { "WIFI",           cmdWifi },
 };
 static const size_t AT_CMD_N = sizeof(AT_CMDS) / sizeof(AT_CMDS[0]);
 
@@ -459,7 +499,7 @@ static void pumpAtPort() {
   static uint8_t rb[256];
   size_t n = 0;
   while (n < sizeof(rb)) {
-    int c = AT_PORT.read();
+    int c = Serial.read();
     if (c < 0) break;
     rb[n++] = (uint8_t)c;
   }
@@ -555,6 +595,9 @@ static void cmdHelp(const char *, bool, bool) {
   atRaw("AT+RESTORE               恢复出厂并重启\n");
   atRaw("AT+SYSLOG=<0|1>          UART0 日志开关\n");
   atRaw("AT+LOG?                  导出 RAM 日志环\n");
+  atRaw("AT+WIFI?                 查询 Wi-Fi 状态（sta/ip/ssid/mdns）\n");
+  atRaw("AT+WIFI=<ssid>,<pass>    配网（保存重启连 STA）\n");
+  atRaw("AT+WIFI=0                清除凭证，回 AP 热点\n");
   atRaw("AT+BLEINIT?              查询 BLE 初始化状态\n");
   atRaw("AT+BLEINIT=<0|1>         0=deinit 1=init\n");
   atRaw("AT+BLESCAN?              查询扫描状态\n");
@@ -596,6 +639,35 @@ static void cmdLogDump(const char *, bool, bool) {
   AT_PORT.print(F("\r\n+LOG:\r\n"));
   logRingDump();
   atRaw("\r\nOK\r\n");
+}
+
+// AT+WIFI?              查询 Wi-Fi 状态（sta/ip/ssid/mdns）
+// AT+WIFI=<ssid>,<pass> 配网（保存后重启连 STA）
+// AT+WIFI=0             清除凭证，重启回 AP 热点
+static void cmdWifi(const char *arg, bool q, bool s) {
+  if (q) {
+    AT_PORT.printf("\r\n+WIFI:%u,%s,%s,%s\r\n",
+                   (unsigned)(g_wifiSta ? 1 : 0),
+                   g_ipStr.c_str(),
+                   g_wifiSta ? WiFi.SSID().c_str() : "",
+                   g_mdnsUrl.c_str());
+    atOk();
+    return;
+  }
+  if (!s) { atError(); return; }
+  Args a; parseArgs(arg, a);
+  if (a.n == 1 && atoiSafe(a.s[0]) == 0) {
+    wifiClear();
+    atOk();
+    delay(400);
+    ESP.restart();
+    return;
+  }
+  if (a.n < 2) { atError(); return; }
+  wifiSave(a.s[0], a.s[1]);
+  atOk();
+  delay(400);
+  ESP.restart();
 }
 
 // ============================================================================
@@ -1160,19 +1232,268 @@ static void cmdBleGattcSub(const char *arg, bool q, bool s) {
 }
 
 // ============================================================================
+//  Wi-Fi 配网 + HTTP/WS server（局域网访问层）
+//  与 USB-CDC 并存：USB 永远在，Wi-Fi 起来后 WS 也开，两条通道收发互通。
+// ============================================================================
+#define AP_SSID_PREFIX   "BLE-Scan-"   // 配网热点前缀，后接 MAC 后两字节
+#define AP_PASSWORD      "12345678"
+#define MDNS_HOST_PREFIX "blescan-"    // mDNS 主机名前缀，访问 http://blescan-XXXX.local
+#define WIFI_STA_TIMEOUT_MS  20000
+#define WIFI_RETRY_INTERVAL  30000
+
+static WebServer g_http(80);
+
+static const char* macSuffix() {
+  static char s[5] = {0};
+  if (s[0] == 0) {
+    uint64_t e = ESP.getEfuseMac();
+    snprintf(s, sizeof(s), "%02X%02X", (uint8_t)(e >> 8), (uint8_t)e);
+  }
+  return s;
+}
+
+static String wifiHostname() {
+  String h = String(MDNS_HOST_PREFIX) + macSuffix();
+  h.toLowerCase();
+  return h;
+}
+
+static String jsonEsc(const String &in) {
+  String o; o.reserve(in.length() + 4);
+  for (unsigned i = 0; i < in.length(); i++) {
+    char c = in[i];
+    if (c == '"' || c == '\\') o += '\\';
+    o += c;
+  }
+  return o;
+}
+
+static void wifiLoad() {
+  Preferences p;
+  p.begin("wifi", true);
+  g_wifiSsid = p.getString("ssid", "");
+  g_wifiPass = p.getString("pass", "");
+  p.end();
+}
+
+static void wifiSave(const String &ssid, const String &pass) {
+  Preferences p;
+  p.begin("wifi", false);
+  p.putString("ssid", ssid);
+  p.putString("pass", pass);
+  p.end();
+}
+
+static void wifiClear() {
+  Preferences p;
+  p.begin("wifi", false);
+  p.remove("ssid");
+  p.remove("pass");
+  p.end();
+  g_wifiSsid = g_wifiPass = "";
+}
+
+static void startMDNS() {
+  String h = wifiHostname();
+  if (MDNS.begin(h.c_str())) {
+    MDNS.addService("http", "tcp", 80);
+    g_mdnsUrl = "http://" + h + ".local";
+    atLog("[net] mDNS %s\r\n", g_mdnsUrl.c_str());
+  }
+}
+
+// 启动网络：有凭证连 STA，失败/无凭证回退 AP+STA 热点
+static void wifiSetup() {
+  wifiLoad();
+  if (g_wifiSsid.length() > 0) {
+    atLog("[net] 连 STA [%s]\r\n", g_wifiSsid.c_str());
+    WiFi.setHostname(wifiHostname().c_str());
+    WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
+    WiFi.begin(g_wifiSsid.c_str(), g_wifiPass.c_str());
+    uint32_t t0 = millis();
+    while (WiFi.status() != WL_CONNECTED && (millis() - t0) < WIFI_STA_TIMEOUT_MS) delay(300);
+    if (WiFi.status() == WL_CONNECTED) {
+      g_wifiSta = true;
+      g_ipStr = WiFi.localIP().toString();
+      atLog("[net] STA up ip=%s\r\n", g_ipStr.c_str());
+      startMDNS();
+      return;
+    }
+    atLog("[net] STA fail status=%d, fallback AP\r\n", (int)WiFi.status());
+  } else {
+    atLog("[net] no creds, AP mode\r\n");
+  }
+  // 热点模式（AP+STA 共存，便于后台补连）
+  g_wifiSta = false;
+  String apSsid = String(AP_SSID_PREFIX) + macSuffix();
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP(apSsid.c_str(), AP_PASSWORD, 1, 0, 4);
+  g_ipStr = WiFi.softAPIP().toString();
+  startMDNS();
+  atLog("[net] AP up ssid=%s ip=%s\r\n", apSsid.c_str(), g_ipStr.c_str());
+}
+
+// 保活：STA 掉线重连 / AP 模式后台补连 STA
+static void wifiEnsure() {
+  static uint32_t last = 0;
+  if (g_wifiSsid.length() == 0) return;
+  if (millis() - last < WIFI_RETRY_INTERVAL) return;
+  last = millis();
+  if (g_wifiSta) {
+    if (WiFi.status() != WL_CONNECTED) {
+      atLog("[net] STA down, reconnect\r\n");
+      WiFi.begin(g_wifiSsid.c_str(), g_wifiPass.c_str());
+    }
+    return;
+  }
+  // AP 模式后台试连
+  WiFi.begin(g_wifiSsid.c_str(), g_wifiPass.c_str());
+  uint32_t t = millis();
+  while (WiFi.status() != WL_CONNECTED && (millis() - t) < 8000) delay(300);
+  if (WiFi.status() == WL_CONNECTED) {
+    g_wifiSta = true;
+    WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
+    g_ipStr = WiFi.localIP().toString();
+    startMDNS();
+    atLog("[net] auto STA up ip=%s\r\n", g_ipStr.c_str());
+  }
+}
+
+// ---- 配网页（AP 模式时 / 返回这个；STA 模式 / 返回业务页 index.html）----
+static const char PROV_HTML[] PROGMEM = R"rawliteral(
+<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BLE-Scan 配网</title><style>
+*{box-sizing:border-box}body{font-family:-apple-system,"PingFang SC",sans-serif;
+margin:0;padding:16px;background:#f2f3f5;color:#222;font-size:15px}
+.w{max-width:460px;margin:0 auto}h1{font-size:19px;margin:6px 0 16px}
+.c{background:#fff;border-radius:12px;padding:16px;margin-bottom:14px;box-shadow:0 1px 3px rgba(0,0,0,.07)}
+label{display:block;font-size:12px;color:#888;margin:10px 0 4px}
+input{width:100%;padding:10px;border:1px solid #dde;border-radius:8px;font-size:15px}
+button{padding:10px 16px;border:0;border-radius:8px;background:#2b6cff;color:#fff;cursor:pointer}
+.r{display:flex;gap:8px;margin-top:14px}.s{font-size:14px;line-height:2}.m{color:#888;font-size:12px}
+</style></head><body><div class="w"><h1>BLE-Scan 设备配网</h1>
+<div class="c"><div class="s">模式: <b id="m">读取中</b><br>IP: <b id="i">-</b><br>地址: <b id="u">-</b></div></div>
+<div class="c"><h2>连接 Wi-Fi</h2>
+<label>Wi-Fi 名称</label><input id="s" autocomplete="off" spellcheck="false">
+<label>密码</label><input id="p" type="password" autocomplete="off">
+<div class="r"><button onclick="sv()">保存并连接</button></div>
+<div class="m" id="h">仅支持 2.4GHz。保存后设备重启并连接，连上后本页自动跳业务页。</div>
+</div></div><script>
+function rf(){fetch('/api/status').then(r=>r.json()).then(s=>{
+$('m').innerText=s.sta?'已连接局域网':'配网热点';$('i').innerText=s.ip;
+$('u').innerText=s.mdns||'-';if(s.mdns)_m=s.mdns;}).catch(()=>{});}
+var _m='';function $(id){return document.getElementById(id);}
+function sv(){var ss=$('s').value.trim(),pp=$('p').value;if(!ss){alert('请填 SSID');return;}
+$('h').innerText='保存中...';
+fetch('/api/wifi',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+body:'ssid='+encodeURIComponent(ss)+'&password='+encodeURIComponent(pp)}).then(r=>{
+if(!r.ok)throw 0;$('h').innerText='已保存，设备重启中。切回 '+ss+' 后访问 '+(_m||'设备地址');
+window.addEventListener('online',()=>{if(_m)location.href=_m;});
+}).catch(()=>{$('h').innerText='保存失败';});}
+rf();setInterval(rf,3000);
+</script></body></html>
+)rawliteral";
+
+// ---- HTTP handlers ----
+// 业务页始终在上位机本地（index.html），dongle 只做 WS 数据通道 + 配网页。
+// 已联网时 / 返回状态 JSON，让上位机发现设备 IP/mDNS。
+static void httpRoot() {
+  if (g_wifiSta) {
+    String j = "{\"sta\":true,\"ip\":\"" + g_ipStr + "\",\"ssid\":\"" +
+               jsonEsc(WiFi.SSID()) + "\",\"mdns\":\"" + g_mdnsUrl + "\"}";
+    g_http.send(200, "application/json", j);
+  } else {
+    g_http.send_P(200, "text/html", PROV_HTML);
+  }
+}
+
+static void httpStatus() {
+  String j = "{";
+  j += "\"sta\":"    + String(g_wifiSta ? "true" : "false") + ",";
+  j += "\"ip\":\""   + g_ipStr + "\",";
+  j += "\"ssid\":\"" + jsonEsc(g_wifiSta ? WiFi.SSID() : String("")) + "\",";
+  j += "\"mdns\":\"" + g_mdnsUrl + "\",";
+  j += "\"fw\":\""   + String(FW_NAME) + " " + FW_VERSION + "\"";
+  j += "}";
+  g_http.send(200, "application/json", j);
+}
+
+static void httpWifi() {
+  String ssid = g_http.arg("ssid");
+  String pass = g_http.arg("password");
+  ssid.trim();
+  if (ssid.length() == 0 || ssid.length() > 32 || pass.length() > 64) {
+    g_http.send(400, "text/plain", "bad ssid/pass");
+    return;
+  }
+  atLog("[net] save wifi [%s]\r\n", ssid.c_str());
+  wifiSave(ssid, pass);
+  g_http.send(200, "application/json", "{\"ok\":true}");
+  delay(600);
+  ESP.restart();
+}
+
+static void httpForget() {
+  atLog("[net] forget wifi\r\n");
+  wifiClear();
+  g_http.send(200, "application/json", "{\"ok\":true}");
+  delay(600);
+  ESP.restart();
+}
+
+static void httpSetup() {
+  g_http.on("/",              HTTP_GET,  httpRoot);
+  g_http.on("/api/status",    HTTP_GET,  httpStatus);
+  g_http.on("/api/wifi",      HTTP_POST, httpWifi);
+  g_http.on("/api/forgetwifi",HTTP_POST, httpForget);
+  g_http.onNotFound([]() { g_http.send(404, "text/plain", "not found"); });
+  g_http.begin();
+  atLog("[net] HTTP 80 up\r\n");
+}
+
+// ---- WebSocket：收消息喂 feedAtByte ----
+static void wsEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t len) {
+  (void)num;
+  switch (type) {
+    case WStype_CONNECTED:
+      atLog("[ws] client #%u connected\r\n", (unsigned)num);
+      break;
+    case WStype_DISCONNECTED:
+      atLog("[ws] client #%u gone\r\n", (unsigned)num);
+      break;
+    case WStype_TEXT:
+    case WStype_BIN:
+      // 把收到的字节当 AT 输入流喂进去（和 USB-CDC 同一条解析路径）
+      for (size_t i = 0; i < len; i++) feedAtByte(payload[i]);
+      break;
+    default: break;
+  }
+}
+
+static void wsSetup() {
+  g_ws.begin();
+  g_ws.onEvent(wsEvent);
+  g_wsReady = true;
+  atLog("[net] WS 81 up\r\n");
+}
+
+// ============================================================================
 //  setup / loop
 // ============================================================================
 void setup() {
   // 1) AT 口：RX 环加大到 1024，BLESCAN 期间上位机发的命令得先在环里等
-  AT_PORT.setRxBufferSize(1024);
-  AT_PORT.begin(115200);
+  Serial.setRxBufferSize(1024);
+  Serial.begin(115200);
 
   // 2) 日志口 UART0
   LOG_PORT.begin(115200);
 
   // 3) 丢掉上电瞬间的残字节
   delay(30);
-  while (AT_PORT.available()) AT_PORT.read();
+  while (Serial.available()) Serial.read();
 
   // 4) 配置
   cfgDefaults();
@@ -1183,11 +1504,19 @@ void setup() {
         (int)g_cfg.echo, (int)g_cfg.syslog, (int)g_cfg.activeScan,
         (unsigned)g_cfg.interval, (unsigned)g_cfg.window);
 
+  // 5) 网络（配网或连 STA）+ HTTP/WS
+  wifiSetup();
+  httpSetup();
+  wsSetup();
+
   atRaw("\r\nready\r\n");
 }
 
 void loop() {
-  pumpAtPort();     // 收 AT 命令
+  pumpAtPort();     // 收 AT 命令（USB-CDC）
+  g_http.handleClient();
+  g_ws.loop();
+  wifiEnsure();
 
   // 检查定时扫描是否到期。BLE 栈本身会在 duration 后 stop，这里只是
   // 同步本地状态 + 给上位机发一个 +BLESCAN:done URC。

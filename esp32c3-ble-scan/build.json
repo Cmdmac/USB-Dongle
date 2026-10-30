@@ -1,6 +1,6 @@
 {
   "type": "arduino",
-  "fqbn": "esp32:esp32:esp32c3:CDCOnBoot=cdc",
+  "fqbn": "esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=huge_app",
   "baud": 921600,
   "verbose": true
 }

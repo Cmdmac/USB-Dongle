@@ -1,29 +1,35 @@
-# esp32c3-ble-scan —— BLE 扫描 + GATT Client AT 固件（AT 走 USB-CDC，本地网页上位机）
+# esp32c3-ble-scan —— BLE 扫描 + GATT Client AT 固件（USB-CDC + 局域网双通道，网页上位机）
 
-把 ESP32-C3 当「BLE 调试猫」用：上位机（PC / 单片机）发 AT 文本命令让它扫描 BLE 广播、
+把 ESP32-C3 当「BLE 调试猫」用：上位机（PC / 单片机 / 浏览器）发 AT 文本命令让它扫描 BLE 广播、
 连接指定设备、发现 service/characteristic、读写 value、订阅 notify。
 所有事件通过 `+BLESCAN:...` / `+BLECONN:...` / `+BLEGATTC_...` URC 主动推给上位机。
-**配套一个本地网页上位机**（`index.html`，零依赖，用浏览器 Web Serial API 直接和设备通信），
+**配套网页上位机**（`index.html`，零依赖，始终在上位机本地），同页支持两种 transport：
+插电脑 USB 时用 **Web Serial API** 直连；dongle 独立供电在局域网内时用 **WebSocket** 连设备 81 端口。
 默认体验对标 nRF Connect：广播包结构化解析、RSSI 折线图、过滤栏、设备详情面板里的 GATT 树。
 
 ```
-电脑 USB 口 ◄──AT 命令 / +BLESCAN / +BLECONN / +BLEGATTC_* URC──►
-              ↑                                                       ↕
-        本地网页 (index.html)                                         ESP32-C3 BLE 协议栈 ◄──► 周围 BLE 设备
-        ├─ Web Serial API 直连
-        ├─ 发 AT 指令
-        ├─ 实时表格 + RSSI 折线 + 广播包 AD 解析
-        └─ 设备详情面板：GATT Service/Characteristic 树 + Read/Write/Subscribe
+        上位机本地网页 (index.html)                     ESP32-C3 BLE 协议栈 ◄──► 周围 BLE 设备
+        ├─ 连接方式：USB 直连 / 局域网 WebSocket         ↑
+        │   · USB：Web Serial API，插电脑                │ Wi-Fi STA / 首次配网开 SoftAP
+        │   · WS ：填 dongle 地址 → ws://<host>:81/ws     │ HTTP :80 配网页 + /api/status
+        ├─ 发 AT 指令                                    │ WebSocket :81 ↔ AT 解析器
+        ├─ 实时表格 + RSSI 折线 + 广播包 AD 解析        │ mDNS: blescan-XXXX.local
+        └─ 设备详情面板：GATT Service/Characteristic 树 └─ MultiStream: AT 输出 fanout → USB-CDC + 所有 WS 客户端
 ```
 
-> 与同目录 `esp32c3-at-cdc` 同样是「AT 命令走 USB-CDC」的形态，但专注 BLE 扫描，
-> 不带 Wi-Fi / TCP / UDP 那一套。两者固件互斥（不能同时烧）。
+> **架构要点**：业务页 `index.html` 始终在上位机本地（双击即用），dongle 固件只内嵌**配网页**
+> （首次填 Wi-Fi 凭证用）+ WS 数据通道。改页面不用重编固件。
+>
+> 两条通道并存且互通：USB-CDC 和 WebSocket 共享同一个 AT 解析器（输入）和 MultiStream（输出），
+> 任何一条通道发的命令、任何一条通道收到的 URC，两边都看得到。
 
-## 通道分配（与 esp32c3-at-cdc 一致）
+## 通道分配
 
 | 通道 | 载体 | 用途 |
 | --- | --- | --- |
 | **AT 命令** | USB Serial/JTAG（HWCDC）= Arduino 的 `Serial` | 插电脑即用；波特率无意义 |
+| **AT 命令（局域网）** | WebSocket `ws://<dongle>:81/ws` | dongle 独立供电，上位机填 mDNS 名或 IP 直连 |
+| **配网页** | HTTP `http://<dongle>:80` | **仅首次**填 Wi-Fi 凭证；联网后 `/` 返回状态 JSON |
 | **日志** | UART0（GPIO20/21, 115200）= `Serial0` | `atLog()` 输出 + RAM 日志环（`AT+LOG?` 倒出） |
 
 `CDCOnBoot=cdc` 下 Arduino 的 `Serial` 就是 AT 口，因此本文件**不使用** `log_i()` / `ESP_LOGI()` 等
@@ -40,30 +46,46 @@ cd ../esp-build-tool && ./start.sh      # 打开 http://127.0.0.1:8787
 或手工：
 
 ```bash
-arduino-cli compile --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc --output-dir .build .
-arduino-cli upload  --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc \
+arduino-cli compile --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=huge_app --output-dir .build .
+arduino-cli upload  --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=huge_app \
                     -p /dev/cu.usbmodemXXXX --input-dir .build .
 ```
 
 > ⚠️ `CDCOnBoot=cdc` 不是可选项，少了它 `Serial` 会指向 UART0（没引出），
 > AT 命令就跑丢了。.ino 里有 `#error` 兜底，编译时会直接报错。
 >
-> 依赖：`BLEDevice.h` 是 arduino-esp32 core 自带的库，**不需要**额外装第三方库。
-> 实测体积约 Flash 1.1MB / 1.25MB ≈ 88%。
+> ⚠️ `PartitionScheme=huge_app` 是必选项：Wi-Fi + HTTP + WS + 配网页后固件约 1.39MB，
+> 默认 1.25MB 分区装不下；`huge_app` 给 3MB app 区，实测占比约 44%。
+>
+> 依赖：
+> - `BLEDevice.h` / `WiFi.h` / `WebServer.h` / `ESPmDNS.h` —— arduino-esp32 core 自带
+> - **`WebSockets` 库（2.7+）** —— 需额外安装：`arduino-cli lib install WebSockets`
 
 ## 上位机用法
 
-直接双击 [`index.html`](index.html) 在 Chrome / Edge / Opera 桌面版（89+）打开即可。
-若 `file://` 下连不上串口，可在本目录起一个静态服务器：
+双击 [`index.html`](index.html) 在 Chrome / Edge / Opera 桌面版（89+）打开。
+页面顶部「连接方式」下拉**手动选 transport**：
 
-```bash
-python3 -m http.server 8000
-# 浏览器开 http://localhost:8000/
-```
+- **USB 直连 (Web Serial)** —— 插电脑，点「连接设备」弹端口选择框，认 `303A:1001`
+- **局域网 (WebSocket)** —— dongle 独立供电；填设备地址（`blescan-XXXX.local` 或 IP），点「连接设备」连 `ws://<host>:81/ws`
 
-页面上的标准流程：
+### dongle 联网（仅首次需要）
 
-1. **连接设备** —— 浏览器弹端口选择框，认 `303A:1001`（Espressif USB Serial/JTAG）
+dongle 首次上电无 Wi-Fi 凭证 → 自动开 SoftAP `BLE-Scan-XXXX`（密码 `12345678`）：
+
+1. 手机/电脑连这个热点
+2. 浏览器开 `http://192.168.4.1` → 固件下发的配网页 → 填家里 Wi-Fi 名/密码 → 设备重启连 STA
+3. 连上后 mDNS 注册为 `blescan-XXXX.local`（XXXX = MAC 后 4 位），此后 `/` 返回状态 JSON
+4. 之后上位机和 dongle 在同一局域网即可，浏览器打开本地 `index.html` 选 WebSocket 填地址即可用
+
+> 也可用 AT 命令配网：`AT+WIFI=<ssid>,<pass>` 保存重启；`AT+WIFI=0` 清凭证回 AP；
+> `AT+WIFI?` 查询状态（`+WIFI:<sta>,<ip>,<ssid>,<mdns_url>`）。
+>
+> AP 模式下也能用上位机：上位机连 `BLE-Scan-XXXX` 热点后，设备地址填 `192.168.4.1` 即可。
+
+页面上的标准流程（两种 transport 完全一致）：
+
+1. **连接设备** —— USB 模式弹端口选择框认 `303A:1001`；WS 模式连 `ws://<host>:81/ws`
 2. **初始化 BLE** —— 点 `AT+BLEINIT=1`
 3. **开始扫描** —— 填时长（默认 10s，0 表示持续），点按钮
 4. 扫描期间每收到一条广播，下方表格追加/更新一行（按 MAC 去重，保留最新 RSSI 与最后一次见到的字段）

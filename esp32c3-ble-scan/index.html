@@ -107,28 +107,36 @@
 
   <h1>ESP32-C3 BLE 扫描器</h1>
   <div class="env">
-    上位机本地网页。用 <b>Web Serial API</b> 直接从浏览器连接 ESP32-C3 的 USB-CDC 口，
+    上位机本地网页。两种连接方式：<b>USB 直连</b>（Web Serial API，插电脑）或
+    <b>局域网</b>（WebSocket，dongle 插充电头/独立供电，填 mDNS 名或 IP）。
     发 AT 指令控制 BLE 扫描，实时解析 <code>+BLESCAN:</code> 上报并按 MAC 去重展示。<br>
-    浏览器要求：Chrome / Edge / Opera 桌面版 89+（Web Serial）。
-    直接双击本文件打开即可；若 <code>file://</code> 下连不上，
-    可在同目录跑 <code>python3 -m http.server 8000</code> 后访问 <code>http://localhost:8000/</code>。
+    浏览器要求：Chrome / Edge / Opera 桌面版 89+。双击本文件打开即可。
   </div>
 
   <!-- 连接 -->
   <div class="card">
     <div class="row">
-      <label>串口</label>
+      <label id="connLabel">连接方式</label>
+      <select id="transportSel" onchange="onTransportChange()">
+        <option value="serial">USB 直连 (Web Serial)</option>
+        <option value="ws">局域网 (WebSocket)</option>
+      </select>
       <button id="bConn" onclick="onConnect()">连接设备</button>
       <button id="bDisc" class="sec" onclick="onDisconnect()" disabled>断开</button>
       <span class="badge off" id="connBadge">未连接</span>
       <span class="muted" id="portInfo"></span>
     </div>
-    <div class="row">
+    <div class="row" id="baudRow">
       <label>波特率</label>
       <input id="baud" value="115200" style="width:96px">
       <span class="muted">USB-CDC 不按波特率传，填多少都一样</span>
     </div>
-    <div class="tip">
+    <div class="row" id="hostRow" style="display:none">
+      <label>设备地址</label>
+      <input id="host" value="blescan.local" style="width:220px" placeholder="blescan-XXXX.local 或 IP">
+      <span class="muted">dongle 的 mDNS 名或 IP，WS 端口 81</span>
+    </div>
+    <div class="tip" id="serialTip">
       点「连接设备」时浏览器会弹一个端口选择对话框，认 <b>VID:PID = 303A:1001</b>（Espressif USB Serial/JTAG）。
     </div>
   </div>
@@ -225,8 +233,28 @@ var readableClosed = null;
 var writableClosed = null;
 var enc = new TextEncoder();
 var dec = new TextDecoder();
+
+// transport：由用户在 UI 里选（USB 直连 / 局域网 WebSocket）。
+// 业务页始终在上位机本地，dongle 只做 WS 数据通道 + 配网页。
+var transport = 'serial';
+var ws = null;
 var rxbuf = '';
 var connected = false;
+
+function onTransportChange() {
+  transport = $('transportSel').value;
+  if (transport === 'ws') {
+    $('baudRow').style.display = 'none';
+    $('hostRow').style.display = '';
+    $('serialTip').style.display = 'none';
+    appendLog('sys', '已切换：局域网 WebSocket。填设备地址后点「连接设备」。');
+  } else {
+    $('baudRow').style.display = '';
+    $('hostRow').style.display = 'none';
+    $('serialTip').style.display = '';
+    appendLog('sys', '已切换：USB 直连 (Web Serial)。');
+  }
+}
 
 // 设备表（按 MAC 去重）
 // devMap: mac -> { mac, type, rssi, name, adv, parsed, last, idx, hits, fresh, rssiHist: [{t, rssi}] }
@@ -584,6 +612,7 @@ function appearanceStr(a) {
 //  连接 / 断开
 // ============================================================================
 async function onConnect() {
+  if (transport === 'ws') return wsConnect();
   if (!('serial' in navigator)) {
     appendLog('err', '当前浏览器不支持 Web Serial API。请用 Chrome / Edge / Opera 桌面版 89+。');
     return;
@@ -608,7 +637,49 @@ async function onConnect() {
   }
 }
 
+// WS transport：连设备的 81 端口
+function wsConnect() {
+  var host = ($('host').value || '').trim() || 'blescan.local';
+  var url = 'ws://' + host + ':81/ws';
+  appendLog('sys', '连接 ' + url);
+  ws = new WebSocket(url);
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = function () {
+    connected = true;
+    setConnUI(true);
+    appendLog('sys', 'WebSocket 已连接');
+  };
+  ws.onclose = function () {
+    if (connected) { appendLog('sys', 'WebSocket 已断开'); }
+    connected = false;
+    setConnUI(false);
+    gattState.connected = false;
+    gattState.discRunning = false;
+    gattState.services = [];
+    gattState.notifLog = [];
+    renderDetail();
+    ws = null;
+  };
+  ws.onerror = function () { appendLog('err', 'WebSocket 错误'); };
+  ws.onmessage = function (ev) {
+    var data = ev.data;
+    if (data instanceof ArrayBuffer) data = dec.decode(data);
+    else if (data instanceof Blob) { /* 极少出现，降级 */ return; }
+    rxbuf += data;
+    var i;
+    while ((i = rxbuf.indexOf('\n')) >= 0) {
+      var line = rxbuf.slice(0, i);
+      rxbuf = rxbuf.slice(i + 1);
+      handleLine(line.replace(/\r$/, ''));
+    }
+  };
+}
+
 async function onDisconnect() {
+  if (transport === 'ws') {
+    if (ws) { try { ws.close(); } catch (e) {} }
+    return;
+  }
   try {
     if (reader) { reader.cancel(); await readableClosed.catch(function(){}); reader = null; readableClosed = null; }
     if (writer) { writer.releaseLock(); writer = null; writableClosed = null; }
@@ -664,9 +735,16 @@ function setConnUI(on) {
 //  发送
 // ============================================================================
 async function sendCmd(cmd) {
-  if (!connected || !writer) { appendLog('err', '串口未连接'); return; }
+  if (!connected) { appendLog('err', '未连接'); return; }
   var nl = $('nl').checked;
   var payload = enc.encode(cmd + (nl ? '\r\n' : ''));
+  if (transport === 'ws') {
+    if (!ws || ws.readyState !== 1) { appendLog('err', 'WebSocket 未就绪'); return; }
+    ws.send(payload);
+    appendLog('cmd', '→ ' + cmd + (nl ? ' \\r\\n' : '') + '   (' + payload.length + ' 字节)');
+    return;
+  }
+  if (!writer) { appendLog('err', '串口未连接'); return; }
   try { await writer.write(payload); }
   catch (e) { appendLog('err', '发送失败：' + e.message); return; }
   appendLog('cmd', '→ ' + cmd + (nl ? ' \\r\\n' : '') + '   (' + payload.length + ' 字节)');
@@ -1475,10 +1553,13 @@ window.addEventListener('beforeunload', function () {
   if (connected) onDisconnect();
 });
 
-appendLog('sys', '就绪。点「连接设备」开始。');
-appendLog('sys', '浏览器要求：Chrome / Edge / Opera 桌面版 89+（Web Serial API）。');
-if (!('serial' in navigator)) {
-  appendLog('err', '当前浏览器不支持 Web Serial API，请换 Chrome / Edge / Opera 桌面版 89+。');
-}
+// transport 初始化：默认 USB 直连，用户可在 UI 切换
+(function initTransport() {
+  appendLog('sys', '就绪。默认 USB 直连；若走局域网，请在「连接方式」选 WebSocket 并填设备地址。');
+  appendLog('sys', '浏览器要求：Chrome / Edge / Opera 桌面版 89+（Web Serial）。');
+  if (!('serial' in navigator)) {
+    appendLog('err', '当前浏览器不支持 Web Serial API，请换 Chrome / Edge / Opera 桌面版 89+。');
+  }
+})();
 </script>
 </body></html>
