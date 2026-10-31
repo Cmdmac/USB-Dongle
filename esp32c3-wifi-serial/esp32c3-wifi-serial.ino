@@ -179,6 +179,7 @@ static void handleConfigGet();
 static void handleConfigPost();
 static void handleWol();
 static void handleReboot();
+static void handleForgetWifi();
 static void handleLogGet();
 static void handleLogClear();
 static void handleOtaPage();
@@ -799,6 +800,22 @@ static void handleReboot() {
   ESP.restart();
 }
 
+// 忘记 Wi-Fi：清空凭证并重启，回到配网热点。
+// 为什么需要它：连上局域网后是纯 STA，热点已经关了；换了路由器 / 改了密码，
+// 设备就再也联系不上，只能拔电、重新烧写或想别的办法。有了这条路由，
+// 至少还能从当前网络里把它「踢回」配网模式（对应页面上的「Wi-Fi 回退」卡片）。
+// 注意顺序：先把响应发完再重启，否则浏览器只看到连接被重置。
+static void handleForgetWifi() {
+  if (!checkAuth()) { web.requestAuthentication(); web.send(401, "text/plain", "unauthorized"); return; }
+  wlog("[wifi] 网页触发忘记 Wi-Fi：清空 [%s] 的凭证，重启回配网热点\r\n", cfg.wifiSsid);
+  cfg.wifiSsid[0] = 0;
+  cfg.wifiPass[0] = 0;
+  cfgSave();
+  web.send(200, "application/json", "{\"ok\":true,\"reboot\":true}");
+  delay(400);
+  ESP.restart();
+}
+
 static void handleLogGet() {
   if (!checkAuth()) { web.requestAuthentication(); web.send(401, "text/plain", "unauthorized"); return; }
   web.setContentLength(CONTENT_LENGTH_UNKNOWN);
@@ -863,6 +880,7 @@ static void webSetup() {
   web.on("/api/config",  HTTP_POST, handleConfigPost);
   web.on("/api/wol",     HTTP_POST, handleWol);
   web.on("/api/reboot",  HTTP_POST, handleReboot);
+  web.on("/api/forgetwifi", HTTP_POST, handleForgetWifi);
   web.on("/api/log",     HTTP_GET,  handleLogGet);
   web.on("/api/log/clear", HTTP_POST, handleLogClear);
   web.on("/ota",         HTTP_GET,  handleOtaPage);

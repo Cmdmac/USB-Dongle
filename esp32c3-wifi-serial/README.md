@@ -46,6 +46,18 @@ RAM 日志环，`/api/log` 可倒出）。板子没引出 UART0 也能排查问�
 > `location.host` 是对的；Arduino 版拆成两个端口后，页面里的地址必须带 `:81`。
 > 想手动接：`ws://<设备IP>:81/ws`（路径随意，不校验）。
 
+### 回退热点（换了路由器 / 改了密码）
+
+连上局域网后设备是**纯 STA，配网热点已经关了**。换路由器、改 Wi-Fi 密码、把设备挪到别处，
+设备就再也联系不上，页面也打不开。这时用「Wi-Fi 回退」：
+
+- 手里还有旧网络能访问设备时：打开 `http://<设备IP>/` → **Wi-Fi 回退** 卡片 → 点
+  「忘记 Wi-Fi，回到热点」→ 清空凭证并重启 → 重新广播 `USB-Dongle-XXXX`（密码 `12345678`、IP 192.168.4.1）
+- 只剩命令行：`curl -X POST http://<设备IP>/api/forgetwifi`
+- 连旧网络都进不去：只能接 USB 重刷，或在配置页把 Wi-Fi SSID 清空后**断电重启**（同样回到 AP）
+
+回 AP 后重新连热点、在配网页填新 Wi-Fi 即可，配置的其他项（端口、密码、MQTT）都还在 NVS 里，不受影响。
+
 ## 快速开始
 
 **前置：必须先装两个第三方库，否则编译直接死在 `WebSocketsServer.h`**：
@@ -184,6 +196,7 @@ Enable-WindowsOptionalFeature -Online -FeatureName TelnetClient -NoRestart
 | `/api/config` | GET/POST | 读 / 写整块配置（写后按需重启服务） |
 | `/api/wol` | POST | 发 Wake-on-LAN 魔术包（最多 4 个目标） |
 | `/api/reboot` | POST | 重启设备 |
+| `/api/forgetwifi` | POST | 清空 Wi-Fi 凭证并重启，回到配网热点（见「回退热点」） |
 | `/api/log` | GET | RAM 日志环（没接 UART0 也能看日志） |
 | `/api/log/clear` | POST | 清空日志环 |
 | `/ota` `/ota/upload` | GET/POST | 网页 OTA：上传 .bin 直接升级 |

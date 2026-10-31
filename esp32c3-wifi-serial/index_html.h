@@ -34,6 +34,11 @@ font:13px Menlo,Consolas,monospace}
 
 <div class=card><h3>运行状态</h3><div class=st id=status>加载中...</div></div>
 
+<div class=card><h3>Wi-Fi 回退</h3>
+<div class=row><button class=danger onclick=forgetWifi()>忘记 Wi-Fi，回到热点</button>
+<span id=fmsg style='font-size:12px;color:#666'>连上局域网后配网热点会关闭。换路由器 / 改密码连不上时，
+点这里清空凭证并重启，设备会重新广播 USB-Dongle-XXXX 热点（密码 12345678）。</span></div></div>
+
 <div class=card><h3>网页串口终端 <button class=sec onclick=termToggle() id=termBtn>连接</button></h3>
 <div id=term></div>
 <div class=row><input id=termIn placeholder='输入后回车发送到串口' autocomplete=off>
@@ -160,6 +165,18 @@ setTimeout(loadCfg,300);   // 重读一次，显示设备侧真实落盘值
 }
 async function wolAll(){await fetch('/api/wol',{method:'POST',headers:{'Content-Type':'application/json'},body:'{"all":true}'});}
 async function doReboot(){if(confirm('确认重启?'))await fetch('/api/reboot',{method:'POST'});}
+// 回退配网热点：清凭证 + 重启。设备重启后是 AP 模式，本页（当前网络）必然失联，
+// 所以这里不重读配置、只给去向提示。
+async function forgetWifi(){
+if(!confirm('清空已保存的 Wi-Fi 凭证并重启？\n\n设备会断开当前网络，重新广播 USB-Dongle-XXXX 配网热点（密码 12345678）。'))return;
+let m=document.getElementById('fmsg');
+m.textContent='请求已发出，设备重启中…';
+try{
+let r=await fetch('/api/forgetwifi',{method:'POST'});
+if(!r.ok){m.textContent='操作失败：HTTP '+r.status+(r.status===401?'（管理密码不对）':'');return;}
+m.textContent='已清空凭证，设备重启中…约 5 秒后可搜索到 USB-Dongle-XXXX 热点';
+}catch(e){m.textContent='请求已发出，设备很可能已在重启';}
+}
 load();setInterval(load,5000);
 </script></body></html>
 )HTML";
