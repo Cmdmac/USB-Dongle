@@ -8,7 +8,7 @@
   *{box-sizing:border-box}
   body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
        margin:0;padding:18px;background:#f4f5f7;color:#1f2328;font-size:14px}
-  .wrap{max-width:1180px;margin:0 auto}
+  .wrap{max-width:1360px;margin:0 auto}
   h1{font-size:20px;margin:0 0 6px}
   h3{font-size:15px;margin:0 0 8px}
   .env{font-size:12px;color:#6b7280;line-height:1.8;margin-bottom:14px}
@@ -42,6 +42,11 @@
   th{color:#6b7280;font-weight:600;background:#fafbfc}
   td.mac,td.adv{font-family:Menlo,Consolas,monospace;font-size:12px}
   td.rssi{font-family:Menlo,Consolas,monospace}
+  /* 广播类型徽标：iBeacon / Eddystone-* */
+  .btag{display:inline-block;padding:1px 7px;border-radius:9px;font-size:11px;
+        line-height:1.6;white-space:nowrap;font-family:-apple-system,"PingFang SC",sans-serif}
+  .btag.ibeacon{background:#e8f0ff;color:#1d4ed8}
+  .btag.eddystone{background:#e7f6ec;color:#15803d}
   tbody tr:hover{background:#f8f9fb}
   tbody tr.new{animation:flash .8s ease-out}
   tbody tr.sel{background:#eef4ff!important;outline:1px solid #bcdcff}
@@ -61,12 +66,29 @@
   .chk{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:#6b7280;
        cursor:pointer;user-select:none}
   .chk input{width:auto;padding:0;margin:0}
+  /* 设备列表：左侧列表 + 右侧详情（点行在右侧展开） */
+  .devsplit{display:grid;grid-template-columns:minmax(0,1fr) 440px;gap:16px;align-items:start}
+  .listcol{min-width:0;overflow-x:auto}          /* 列挤窄时横向滚，不撑破卡片 */
+  .listcol>table{min-width:680px}
+  .detailcol{min-width:0;border-left:1px solid #eef0f3;padding-left:16px;
+             position:sticky;top:12px;max-height:calc(100vh - 32px);overflow-y:auto}
+  .detail-empty{color:#8a919c;font-size:12px;line-height:1.9;text-align:center;
+                padding:34px 10px;border:1px dashed #e3e6ec;border-radius:8px}
+  .detail-empty .k{display:block;color:#5b636e;font-size:13px;margin-bottom:4px}
+  /* 窄屏放不下两栏就退回上下排列。
+     阈值 1240：两栏时左栏需 ≥680px（8 列表格的最小宽度）；实测 innerWidth 1240 时
+     左栏刚好 684，再窄就只能横向滚了，宁可直接上下排。 */
+  @media (max-width:1240px){
+    .devsplit{grid-template-columns:minmax(0,1fr)}
+    .detailcol{position:static;max-height:none;overflow:visible;
+               border-left:0;padding-left:0;border-top:1px solid #eef0f3;padding-top:12px}
+  }
   /* 详情面板 */
-  .detail{margin-top:14px;border-top:2px solid #eef0f3;padding-top:12px}
+  .detail{margin-top:0;border-top:0;padding-top:0}
   .detail h4{margin:0 0 8px;font-size:14px;color:#334}
-  .detail .grid{display:grid;grid-template-columns:160px 1fr;gap:4px 12px;font-size:13px}
+  .detail .grid{display:grid;grid-template-columns:104px minmax(0,1fr);gap:4px 12px;font-size:13px}
   .detail .grid .k{color:#6b7280}
-  .detail .grid .v{font-family:Menlo,Consolas,monospace;font-size:12px;word-break:break-all}
+  .detail .grid .v{font-family:Menlo,Consolas,monospace;font-size:12px;overflow-wrap:anywhere}
   .detail .segs{margin-top:10px}
   .detail .seg{background:#f8f9fb;border-radius:6px;padding:8px 10px;margin-bottom:6px;font-size:12px}
   .detail .seg b{color:#334}
@@ -97,7 +119,8 @@
   .gatt .descs .d{font-family:Menlo,Consolas,monospace}
   .gatt .notif-log{margin-top:10px;background:#fafbfc;border:1px solid #eef0f3;border-radius:6px;padding:8px 10px;font-size:11px;font-family:Menlo,Consolas,monospace;max-height:160px;overflow:auto}
   .gatt .notif-log .ln{color:#27ae60}.gatt .notif-log .lt{color:#888}
-  .gatt .btn{padding:2px 8px;font-size:11px;border:1px solid #d0d5dd;border-radius:4px;background:#fff;cursor:pointer}
+  .gatt .btn{padding:2px 8px;font-size:11px;border:1px solid #d0d5dd;border-radius:4px;
+             background:#fff;color:#2b6cff;cursor:pointer}
   .gatt .btn:hover{background:#f0f4ff}
   .gatt .btn.danger{color:#c0392b}
   .gatt .muted{color:#999}
@@ -135,6 +158,8 @@
       <label>设备地址</label>
       <input id="host" value="blescan.local" style="width:220px" placeholder="blescan-XXXX.local 或 IP">
       <span class="muted">dongle 的 mDNS 名或 IP，WS 端口 81</span>
+      <button class="danger sm" id="bForget" onclick="forgetWifi()" disabled
+              title="清空设备保存的 Wi-Fi 凭证并重启，回落到 BLE-Scan-XXXX 配网热点">回退热点</button>
     </div>
     <div class="tip" id="serialTip">
       点「连接设备」时浏览器会弹一个端口选择对话框，认 <b>VID:PID = 303A:1001</b>（Espressif USB Serial/JTAG）。
@@ -194,19 +219,23 @@
     <div class="stat" id="filterStat"></div>
   </div>
 
-  <!-- 设备列表 -->
+  <!-- 设备列表（左列表 / 右详情） -->
   <div class="card">
     <div class="row" style="justify-content:space-between">
-      <h3 style="margin:0">扫描到的设备（点击行展开详情）</h3>
+      <h3 style="margin:0">扫描到的设备 <span class="muted" style="font-weight:400">（点行展开详情）</span></h3>
       <span class="stat">共 <b id="nDev">0</b> 个 · 累计收到 <b id="nHit">0</b> 条广播 · 显示 <b id="nShown">0</b></span>
     </div>
-    <table id="devs">
-      <thead><tr>
-        <th>#</th><th>MAC</th><th>类型</th><th>RSSI</th><th>名称</th><th>UUID / 厂商</th><th>更新</th>
-      </tr></thead>
-      <tbody id="devBody"><tr><td colspan="7" class="muted">尚无数据</td></tr></tbody>
-    </table>
-    <div id="detailPanel"></div>
+    <div class="devsplit">
+      <div class="listcol">
+        <table id="devs">
+          <thead><tr>
+            <th>#</th><th>MAC</th><th>地址类型</th><th>广播类型</th><th>RSSI</th><th>名称</th><th>UUID / 厂商</th><th>更新</th>
+          </tr></thead>
+          <tbody id="devBody"><tr><td colspan="7" class="muted">尚无数据</td></tr></tbody>
+        </table>
+      </div>
+      <aside class="detailcol" id="detailPanel"></aside>
+    </div>
   </div>
 
   <!-- AT 日志 -->
@@ -532,6 +561,85 @@ function parseAdv(hex) {
   return out;
 }
 
+// ============================================================================
+//  信标类型识别：iBeacon / Eddystone
+//  两者都能只靠广播包识别、不用连接。列表里显示徽标，详情里展开解出的字段。
+// ============================================================================
+var EDS_URL_SCHEMES = ['http://www.', 'https://www.', 'http://', 'https://'];
+// 0x00-0x0D 是压缩后缀表（0x00-0x06 带结尾 `/`，0x07-0x0D 是同一批顶级域但不带）
+var EDS_URL_CODES = ['.com/', '.org/', '.edu/', '.net/', '.info/', '.biz/', '.gov/',
+                     '.com', '.org', '.edu', '.net', '.info', '.biz', '.gov'];
+var EDS_FRAMES = { 0x00: 'UID', 0x10: 'URL', 0x20: 'TLM', 0x30: 'EID' };
+
+function s8(v) { return v > 127 ? v - 256 : v; }
+
+// iBeacon：Apple 公司 ID 0x004C + 0x02 0x15 + UUID(16) + Major(2) + Minor(2) + 校准功率(1)
+function parseIBeacon(p) {
+  if (!p || !p.mfgr) return null;
+  // 注意 cidHex 形如 "0x004C"，直接 toUpperCase() 会把前缀的 x 也变成 X
+  var cid = (p.mfgr.cidHex || '').replace(/^0x/i, '').toUpperCase();
+  if (cid !== '004C') return null;
+  var b = hexToBytes(p.mfgr.data);
+  if (b.length < 23 || b[0] !== 0x02 || b[1] !== 0x15) return null;
+  var h = bytesToHex(b.slice(2, 18));
+  return {
+    uuid: h.slice(0, 8) + '-' + h.slice(8, 12) + '-' + h.slice(12, 16) + '-'
+        + h.slice(16, 20) + '-' + h.slice(20, 32),
+    major: (b[18] << 8) | b[19],
+    minor: (b[20] << 8) | b[21],
+    txPower: s8(b[22]),
+  };
+}
+
+// Eddystone：服务数据 UUID 0xFEAA，首字节是帧类型（UID/URL/TLM/EID）
+function parseEddystone(p) {
+  if (!p || !p.svcData || !p.svcData.length) return null;
+  var sd = null;
+  for (var i = 0; i < p.svcData.length; i++) {
+    if ((p.svcData[i].uuid || '').toUpperCase() === 'FEAA') { sd = p.svcData[i]; break; }
+  }
+  if (!sd) return null;
+  var b = hexToBytes(sd.data);
+  var out = { ft: b.length ? b[0] : -1 };
+  out.frame = EDS_FRAMES[out.ft] || '';
+  out.label = 'Eddystone' + (out.frame ? '-' + out.frame : '');
+  if (out.ft === 0x00 && b.length >= 18) {          // UID: ranging + namespace(10) + instance(6)
+    out.txPower   = s8(b[1]);
+    out.namespace = bytesToHex(b.slice(2, 12));
+    out.instance  = bytesToHex(b.slice(12, 18));
+  } else if (out.ft === 0x10 && b.length >= 3) {    // URL: ranging + scheme + 压缩 URL
+    out.txPower = s8(b[1]);
+    out.scheme = b[2] & 0x0F;
+    var url = EDS_URL_SCHEMES[out.scheme] || '';
+    for (var k = 3; k < b.length; k++) {
+      var c = b[k];
+      if (c >= 0x21 && c <= 0x7E) url += String.fromCharCode(c);
+      else if (EDS_URL_CODES[c]) url += EDS_URL_CODES[c];   // 0x00-0x0D 压缩后缀；其余 RFU 丢弃
+    }
+    out.url = url;
+  } else if (out.ft === 0x20 && b.length >= 13) {   // TLM: 电压 / 温度 / 广播计数 / 秒计数
+    out.voltage = ((b[1] << 8) | b[2]) / 1000;
+    var tRaw = (b[3] << 8) | b[4];
+    out.temp = (tRaw > 32767 ? tRaw - 65536 : tRaw) / 256;   // 8.8 定点，有符号
+    out.advCount = ((b[5] | (b[6] << 8) | (b[7] << 16) | (b[8] << 24)) >>> 0);
+    out.secCount = ((b[9] | (b[10] << 8) | (b[11] << 16) | (b[12] << 24)) >>> 0);
+  } else if (out.ft === 0x30 && b.length >= 12) {   // EID: ranging + eid(8) + identity key(2)
+    out.txPower = s8(b[1]);
+    out.eid = bytesToHex(b.slice(2, 10));
+    out.identityKey = bytesToHex(b.slice(10, 12));
+  }
+  return out;
+}
+
+// 一台设备可能同时带多种格式，按 iBeacon → Eddystone 优先取一个
+function beaconInfo(p) {
+  var ib = parseIBeacon(p);
+  if (ib) return { kind: 'ibeacon', label: 'iBeacon', ib: ib };
+  var ed = parseEddystone(p);
+  if (ed) return { kind: 'eddystone', label: ed.label, ed: ed };
+  return null;
+}
+
 // Flags 位含义
 function flagsStr(f) {
   if (f == null) return '';
@@ -725,8 +833,8 @@ function setConnUI(on) {
   var b = $('connBadge');
   b.className = 'badge ' + (on ? 'on' : 'off');
   b.textContent = on ? '已连接' : '未连接';
-  ['bInit', 'bDeinit', 'bScan', 'bStop', 'bRsl', 'bSend'].forEach(function (id) {
-    $(id).disabled = !on;
+  ['bInit', 'bDeinit', 'bScan', 'bStop', 'bRsl', 'bSend', 'bForget'].forEach(function (id) {
+    if ($(id)) $(id).disabled = !on;
   });
   if (on) $('cmd').focus();
 }
@@ -748,6 +856,21 @@ async function sendCmd(cmd) {
   try { await writer.write(payload); }
   catch (e) { appendLog('err', '发送失败：' + e.message); return; }
   appendLog('cmd', '→ ' + cmd + (nl ? ' \\r\\n' : '') + '   (' + payload.length + ' 字节)');
+}
+
+// 一键回退热点：连上 Wi-Fi 后设备是纯 STA、热点已关，换网络/改密码就再也连不上。
+// 走已经建好的 WS 发 AT+WIFI=0（清凭证 + 重启），不必再开 HTTP，也就绕开了
+// 本地文件页面（file://）访问局域网时的跨域/CORS 问题。行尾必须显式带 CRLF，
+// 不能跟随界面上那个「行尾」勾选——这是一条确定要执行的命令。
+function forgetWifi() {
+  if (!confirm('清空设备保存的 Wi-Fi 凭证并重启？\n\n重启后设备会重新广播 BLE-Scan-XXXX 热点（密码 12345678），\n当前 WebSocket 会断开，稍等几秒再搜索热点。')) return;
+  if (transport !== 'ws' || !ws || ws.readyState !== 1) {
+    appendLog('err', '请先用「局域网 (WebSocket)」方式连接设备');
+    return;
+  }
+  ws.send(enc.encode('AT+WIFI=0\r\n'));
+  appendLog('cmd', '→ AT+WIFI=0 \\r\\n   (回退热点，设备即将重启)');
+  appendLog('sys', '设备重启后会广播 BLE-Scan-XXXX，需重新用热点连接并填 Wi-Fi');
 }
 
 function onSendCustom() {
@@ -871,6 +994,7 @@ function upsertDevice(mac, addrType, rssi, name, adv) {
     if (adv) {
       existed.adv = adv;
       existed.parsed = parseAdv(adv);
+      existed.beacon = beaconInfo(existed.parsed);   // iBeacon / Eddystone 标识
     }
     existed.last = hh;
     existed.hits = (existed.hits || 0) + 1;
@@ -880,9 +1004,11 @@ function upsertDevice(mac, addrType, rssi, name, adv) {
     if (existed.rssiHist.length > 120) existed.rssiHist.shift();
   } else {
     var idx = devOrder.length + 1;
+    var parsed = parseAdv(adv);
     devMap.set(mac, {
       mac: mac, type: addrType, rssi: rssi, name: name, adv: adv,
-      parsed: parseAdv(adv), last: hh, idx: idx, hits: 1, fresh: true,
+      parsed: parsed, beacon: beaconInfo(parsed),
+      last: hh, idx: idx, hits: 1, fresh: true,
       firstSeen: now, rssiHist: [{ t: now, rssi: rssiN }],
     });
     devOrder.push(mac);
@@ -935,7 +1061,7 @@ function renderDevices() {
     ? '' : '过滤后剩 ' + list.length + ' / ' + devOrder.length + ' 个';
 
   if (!list.length) {
-    body.innerHTML = '<tr><td colspan="7" class="muted">' +
+    body.innerHTML = '<tr><td colspan="8" class="muted">' +
       (devOrder.length ? '没有符合过滤条件的设备' : '尚无数据') + '</td></tr>';
     renderDetail();
     return;
@@ -946,6 +1072,10 @@ function renderDevices() {
     var cls = (d.fresh ? 'new ' : '') + (d.mac === selectedMac ? 'sel' : '');
     d.fresh = false;
     var typeStr = ({ '0':'public','1':'random','2':'public-id','3':'random-id' })[d.type] || d.type;
+    var bc = d.beacon;
+    var bcCell = bc
+      ? '<span class="btag ' + bc.kind + '">' + esc(bc.label) + '</span>'
+      : '<span class="muted">—</span>';
     var rssiN = parseInt(d.rssi, 10);
     var rssiColor = rssiN >= -50 ? '#15803d' : rssiN >= -70 ? '#b45309' : '#b91c1c';
     // UUID / 厂商摘要
@@ -969,6 +1099,7 @@ function renderDevices() {
       + '<td>' + d.idx + '</td>'
       + '<td class="mac">' + esc(d.mac) + '</td>'
       + '<td>' + typeStr + '</td>'
+      + '<td>' + bcCell + '</td>'
       + '<td class="rssi" style="color:' + rssiColor + '">' + esc(d.rssi) + ' dBm'
         + ' <canvas class="rssiMini" width="48" height="14" data-mac="' + d.mac + '"></canvas></td>'
       + '<td>' + esc(d.name || '(unknown)') + '</td>'
@@ -988,17 +1119,33 @@ function renderDevices() {
 function selectDevice(mac) {
   selectedMac = (selectedMac === mac) ? null : mac;
   renderDevices();
+  // 窄屏是上下排列，详情在列表下方可能看不见，选中后滚过去
+  if (selectedMac && window.innerWidth <= 1240) {
+    var el = $('detailPanel');
+    if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
 }
+
+// 右栏空白时的占位（只在状态切换时写一次，避免每来一条广播都重排）
+var DETAIL_EMPTY_HTML = '<div class="detail-empty">'
+  + '<span class="k">点左侧任意一行</span>'
+  + '在这里展开<br>广播解析 · RSSI 曲线 · GATT 操作'
+  + '</div>';
 
 // 详情面板
 function renderDetail() {
   var el = $('detailPanel');
   if (!selectedMac || !devMap.has(selectedMac)) {
-    el.innerHTML = '';
+    if (el.dataset.state !== 'empty') {
+      el.dataset.state = 'empty';
+      el.innerHTML = DETAIL_EMPTY_HTML;
+    }
     return;
   }
+  el.dataset.state = 'filled';
   var d = devMap.get(selectedMac);
   var p = d.parsed || parseAdv(d.adv);
+  var bc = d.beacon;
   var typeStr = ({ '0':'public','1':'random','2':'public-id','3':'random-id' })[d.type] || d.type;
 
   // 字段表
@@ -1006,6 +1153,7 @@ function renderDetail() {
   function kv(k, v) { gridHtml += '<div class="k">' + esc(k) + '</div><div class="v">' + (v == null || v === '' ? '<span class="muted">—</span>' : esc(v)) + '</div>'; }
   kv('MAC', d.mac);
   kv('地址类型', typeStr + ' (' + d.type + ')');
+  kv('广播类型', bc ? bc.label : '');
   kv('当前 RSSI', d.rssi + ' dBm');
   kv('名称', d.name || '');
   if (d.parsed && d.parsed.name && d.parsed.name !== d.name) kv('广播包中的名称', d.parsed.name);
@@ -1016,6 +1164,44 @@ function renderDetail() {
   if (p.flags != null) kv('Flags', '0x' + ('00' + p.flags.toString(16).toUpperCase()).slice(-2) + ' = ' + flagsStr(p.flags));
   if (p.appearance != null) kv('Appearance', appearanceStr(p.appearance) + ' (0x' + ('0000' + p.appearance.toString(16).toUpperCase()).slice(-4) + ')');
   if (p.advInterval != null) kv('广播间隔', p.advInterval.toFixed(2) + ' ms');
+
+  // 信标解码（iBeacon / Eddystone）
+  var beaconHtml = '';
+  if (bc) {
+    var bl = [];
+    var line = function (k, v, mono) {
+      if (v == null || v === '') return;
+      bl.push('<span class="muted">' + esc(k) + ':</span> '
+        + (mono ? '<span class="hex">' + esc(v) + '</span>' : esc(v)));
+    };
+    var hex16 = function (n) { return '0x' + ('0000' + n.toString(16).toUpperCase()).slice(-4); };
+    if (bc.ib) {
+      line('UUID', bc.ib.uuid, true);
+      line('Major', bc.ib.major + ' (' + hex16(bc.ib.major) + ')');
+      line('Minor', bc.ib.minor + ' (' + hex16(bc.ib.minor) + ')');
+      line('校准功率 @1m', bc.ib.txPower + ' dBm');
+    } else if (bc.ed) {
+      var ed = bc.ed;
+      if (ed.frame) line('帧类型', ed.frame + ' (0x' + ('00' + ed.ft.toString(16).toUpperCase()).slice(-2) + ')');
+      else line('帧类型', '未知 (0x' + ('00' + (ed.ft >>> 0).toString(16).toUpperCase()).slice(-2) + ')');
+      line('Tx Power @0m', ed.txPower == null ? '' : ed.txPower + ' dBm');
+      line('Namespace', ed.namespace, true);
+      line('Instance', ed.instance, true);
+      line('URL', ed.url);
+      if (ed.voltage != null) line('电池电压', ed.voltage.toFixed(3) + ' V');
+      if (ed.temp != null) line('温度', ed.temp.toFixed(2) + ' °C');
+      if (ed.advCount != null) line('广播计数', String(ed.advCount));
+      if (ed.secCount != null) {
+        line('已运行', ed.secCount + ' s（' + (ed.secCount / 86400).toFixed(1) + ' 天）');
+      }
+      line('EID', ed.eid, true);
+      line('Identity Key', ed.identityKey, true);
+    }
+    if (bl.length) {
+      beaconHtml = '<div class="segs"><b>' + esc(bc.label) + '</b><br>'
+        + '<div class="seg">' + bl.join('<br>') + '</div></div>';
+    }
+  }
 
   // UUID 段
   var uuidHtml = '';
@@ -1071,18 +1257,20 @@ function renderDetail() {
 
   // RSSI 折线图
   var chartHtml = '<div class="rssi-chart"><b>RSSI 历史</b>'
-    + '<canvas id="rssiChart" width="640" height="120"></canvas></div>';
+    + ' <span class="muted" style="font-size:11px">dBm</span>'
+    + '<canvas id="rssiChart" height="120"></canvas></div>';
 
   el.innerHTML = '<div class="detail">'
     + '<h4>设备详情：' + esc(d.name || d.mac) + '</h4>'
     + '<div class="grid">' + gridHtml + '</div>'
+    + beaconHtml
     + uuidHtml + svcHtml + mfgrHtml + rawHtml + rawHexHtml + chartHtml
     + '</div>'
     + renderGattHtml(d);
 
-  // 画 RSSI 折线图
+  // 画 RSSI 折线图（先按所在栏实际宽度重建画布）
   var c = $('rssiChart');
-  if (c) drawRssiChart(c, d);
+  if (c) { sizeRssiCanvas(c); drawRssiChart(c, d); }
 }
 
 // ============================================================================
@@ -1427,9 +1615,24 @@ function drawMiniRssi(canvas, d) {
 }
 
 // 大 RSSI 折线图
+// 画布按它所在栏的实际宽度重建：右侧详情栏只有 ~440px，HTML 里写死的
+// width=640 会横向溢出；同时按 devicePixelRatio 放大背板，高分屏上不糊。
+function sizeRssiCanvas(c) {
+  var cssW = Math.max(220, Math.round(c.parentNode.clientWidth - 2));  // 减左右各 1px 边框
+  var cssH = 120;
+  var dpr = window.devicePixelRatio || 1;
+  c.width = Math.round(cssW * dpr);
+  c.height = Math.round(cssH * dpr);
+  c.style.width = '100%';
+  c.style.height = cssH + 'px';
+  c._w = cssW;
+  c._h = cssH;
+  c.getContext('2d').setTransform(dpr, 0, 0, dpr, 0, 0);  // 之后按 CSS 像素作图
+}
+
 function drawRssiChart(canvas, d) {
   var ctx = canvas.getContext('2d');
-  var w = canvas.width, h = canvas.height;
+  var w = canvas._w || canvas.width, h = canvas._h || canvas.height;
   ctx.clearRect(0, 0, w, h);
   if (!d.rssiHist || !d.rssiHist.length) return;
 
@@ -1442,7 +1645,7 @@ function drawRssiChart(canvas, d) {
     v = v < yMin ? yMin : (v > yMax ? yMax : v);
     return padT + ch - ((v - yMin) / (yMax - yMin)) * ch;
   }
-  // 网格 + Y 标签
+  // 网格 + Y 标签（只画数字：单位在标题里，带 " dBm" 的话最后一格 -100 会被画布左边缘切掉）
   ctx.strokeStyle = '#eef0f3';
   ctx.fillStyle = '#8a919c';
   ctx.font = '10px Menlo, Consolas, monospace';
@@ -1451,7 +1654,7 @@ function drawRssiChart(canvas, d) {
   for (var v = -30; v >= -100; v -= 10) {
     var y = yOf(v);
     ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
-    ctx.fillText(v + ' dBm', padL - 4, y);
+    ctx.fillText(v, padL - 4, y);
   }
 
   // X 轴：时间
@@ -1552,6 +1755,17 @@ async function onStartScan() {
 window.addEventListener('beforeunload', function () {
   if (connected) onDisconnect();
 });
+
+// 窗口尺寸变化 → 右栏宽度变了 → 重画详情（主要是 RSSI 画布的背板尺寸）。
+// 加防抖，拖动窗口时不要每个像素都重排一次。
+var _detailRz = null;
+window.addEventListener('resize', function () {
+  clearTimeout(_detailRz);
+  _detailRz = setTimeout(function () { if (selectedMac) renderDetail(); }, 200);
+});
+
+// 先给右栏铺上占位，别等到第一条广播来了才出来
+renderDetail();
 
 // transport 初始化：默认 USB 直连，用户可在 UI 切换
 (function initTransport() {

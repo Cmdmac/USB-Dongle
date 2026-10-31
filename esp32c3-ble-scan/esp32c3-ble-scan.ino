@@ -1397,17 +1397,54 @@ rf();setInterval(rf,3000);
 </script></body></html>
 )rawliteral";
 
+// ---- 已联网时的控制页 ----
+// 连上 STA 后热点是关的（wifiSetup 走的是纯 WIFI_STA），一旦换了路由器 / 改了密码，
+// 设备就再也联系不上，只能插 USB 发 AT+WIFI=0。这个页面补上「从浏览器踢回热点」的出口：
+// 只要还在这台设备所在的局域网里，打开 http://<ip>/ 就能清凭证重启。
+static const char CTRL_HTML[] PROGMEM = R"rawliteral(
+<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BLE-Scan 设备</title><style>
+*{box-sizing:border-box}body{font-family:-apple-system,"PingFang SC",sans-serif;
+margin:0;padding:16px;background:#f2f3f5;color:#222;font-size:15px}
+.w{max-width:460px;margin:0 auto}h1{font-size:19px;margin:6px 0 16px}
+.c{background:#fff;border-radius:12px;padding:16px;margin-bottom:14px;box-shadow:0 1px 3px rgba(0,0,0,.07)}
+.s{font-size:14px;line-height:2}.m{color:#888;font-size:12px;margin-top:10px}
+button{padding:9px 14px;border:0;border-radius:8px;background:#2b6cff;color:#fff;cursor:pointer;font-size:14px}
+button.warn{background:#e05252}button.sec{background:#e4e8ef;color:#333}
+.r{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+</style></head><body><div class="w"><h1>BLE-Scan 设备</h1>
+<div class="c"><div class="s">模式: <b>已连接局域网</b><br>IP: <b id="i">-</b><br>
+Wi-Fi: <b id="s">-</b><br>mDNS: <b id="u">-</b><br>固件: <b id="v">-</b></div></div>
+<div class="c"><b>回退到配网热点</b>
+<div class="m">清空已保存的 Wi-Fi 凭证并重启。重启后设备广播 BLE-Scan-XXXX 热点（密码 12345678），
+<b>当前这台设备会从本网络断开</b>。换路由器、改密码、把设备挪到别处时用这里。</div>
+<div class="r"><button class="warn" onclick="fg()" id="b1">忘记 Wi-Fi，回热点</button>
+<button class="sec" onclick="rb()" id="b2">重启设备</button></div>
+<div class="m" id="h"></div></div>
+<div class="c"><b>业务页</b><div class="m">扫描/GATT 的上位机页面在电脑本地（index.html），
+用地址 <b id="h2">-</b> 以 WebSocket 方式连接本设备即可；本页只用来改网络。</div></div>
+</div><script>
+function $(id){return document.getElementById(id);}
+function rf(){fetch('/api/status').then(r=>r.json()).then(s=>{
+$('i').innerText=s.ip||'-';$('s').innerText=s.ssid||'-';
+$('u').innerText=s.mdns||'-';$('v').innerText=s.fw||'-';
+var h=s.mdns||s.ip||'';if(h)$('h2').innerText=h+':81';
+}).catch(()=>{});}
+function fg(){if(!confirm('清空 Wi-Fi 凭证并重启？设备会断开当前网络、重新广播配网热点。'))return;
+$('b1').disabled=true;$('h').innerText='已发送，设备重启中…';
+fetch('/api/forgetwifi',{method:'POST'}).catch(()=>{});}
+function rb(){if(!confirm('确认重启设备？'))return;$('b2').disabled=true;
+fetch('/api/reboot',{method:'POST'}).catch(()=>{});}
+rf();setInterval(rf,3000);
+</script></body></html>
+)rawliteral";
+
 // ---- HTTP handlers ----
-// 业务页始终在上位机本地（index.html），dongle 只做 WS 数据通道 + 配网页。
-// 已联网时 / 返回状态 JSON，让上位机发现设备 IP/mDNS。
+// 业务页始终在上位机本地（index.html），dongle 只做 WS 数据通道 + 配网/控制页。
+// 未联网时 / 是配网页；已联网时 / 是控制页（含「忘记 Wi-Fi」和重启）。
 static void httpRoot() {
-  if (g_wifiSta) {
-    String j = "{\"sta\":true,\"ip\":\"" + g_ipStr + "\",\"ssid\":\"" +
-               jsonEsc(WiFi.SSID()) + "\",\"mdns\":\"" + g_mdnsUrl + "\"}";
-    g_http.send(200, "application/json", j);
-  } else {
-    g_http.send_P(200, "text/html", PROV_HTML);
-  }
+  g_http.send_P(200, "text/html", g_wifiSta ? CTRL_HTML : PROV_HTML);
 }
 
 static void httpStatus() {
@@ -1444,11 +1481,19 @@ static void httpForget() {
   ESP.restart();
 }
 
+static void httpReboot() {
+  g_http.send(200, "application/json", "{\"ok\":true,\"reboot\":true}");
+  atLog("[net] web reboot\r\n");
+  delay(400);          // 等响应发出去再断
+  ESP.restart();
+}
+
 static void httpSetup() {
   g_http.on("/",              HTTP_GET,  httpRoot);
   g_http.on("/api/status",    HTTP_GET,  httpStatus);
   g_http.on("/api/wifi",      HTTP_POST, httpWifi);
   g_http.on("/api/forgetwifi",HTTP_POST, httpForget);
+  g_http.on("/api/reboot",    HTTP_POST, httpReboot);
   g_http.onNotFound([]() { g_http.send(404, "text/plain", "not found"); });
   g_http.begin();
   atLog("[net] HTTP 80 up\r\n");

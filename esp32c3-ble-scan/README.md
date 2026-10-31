@@ -5,20 +5,21 @@
 所有事件通过 `+BLESCAN:...` / `+BLECONN:...` / `+BLEGATTC_...` URC 主动推给上位机。
 **配套网页上位机**（`index.html`，零依赖，始终在上位机本地），同页支持两种 transport：
 插电脑 USB 时用 **Web Serial API** 直连；dongle 独立供电在局域网内时用 **WebSocket** 连设备 81 端口。
-默认体验对标 nRF Connect：广播包结构化解析、RSSI 折线图、过滤栏、设备详情面板里的 GATT 树。
+默认体验对标 nRF Connect：广播包结构化解析、广播类型识别（iBeacon / Eddystone）、RSSI 折线图、
+过滤栏、设备详情面板里的 GATT 树。
 
 ```
         上位机本地网页 (index.html)                     ESP32-C3 BLE 协议栈 ◄──► 周围 BLE 设备
         ├─ 连接方式：USB 直连 / 局域网 WebSocket         ↑
         │   · USB：Web Serial API，插电脑                │ Wi-Fi STA / 首次配网开 SoftAP
-        │   · WS ：填 dongle 地址 → ws://<host>:81/ws     │ HTTP :80 配网页 + /api/status
+        │   · WS ：填 dongle 地址 → ws://<host>:81/ws     │ HTTP :80 配网/控制页 + /api/*
         ├─ 发 AT 指令                                    │ WebSocket :81 ↔ AT 解析器
         ├─ 实时表格 + RSSI 折线 + 广播包 AD 解析        │ mDNS: blescan-XXXX.local
         └─ 设备详情面板：GATT Service/Characteristic 树 └─ MultiStream: AT 输出 fanout → USB-CDC + 所有 WS 客户端
 ```
 
 > **架构要点**：业务页 `index.html` 始终在上位机本地（双击即用），dongle 固件只内嵌**配网页**
-> （首次填 Wi-Fi 凭证用）+ WS 数据通道。改页面不用重编固件。
+> 和**控制页**（联网后改网络用）+ WS 数据通道。改业务页不用重编固件。
 >
 > 两条通道并存且互通：USB-CDC 和 WebSocket 共享同一个 AT 解析器（输入）和 MultiStream（输出），
 > 任何一条通道发的命令、任何一条通道收到的 URC，两边都看得到。
@@ -29,7 +30,7 @@
 | --- | --- | --- |
 | **AT 命令** | USB Serial/JTAG（HWCDC）= Arduino 的 `Serial` | 插电脑即用；波特率无意义 |
 | **AT 命令（局域网）** | WebSocket `ws://<dongle>:81/ws` | dongle 独立供电，上位机填 mDNS 名或 IP 直连 |
-| **配网页** | HTTP `http://<dongle>:80` | **仅首次**填 Wi-Fi 凭证；联网后 `/` 返回状态 JSON |
+| **配网页 / 控制页** | HTTP `http://<dongle>:80` | 未联网时是配网页；联网后是控制页（忘记 Wi-Fi / 重启） |
 | **日志** | UART0（GPIO20/21, 115200）= `Serial0` | `atLog()` 输出 + RAM 日志环（`AT+LOG?` 倒出） |
 
 `CDCOnBoot=cdc` 下 Arduino 的 `Serial` 就是 AT 口，因此本文件**不使用** `log_i()` / `ESP_LOGI()` 等
@@ -75,9 +76,17 @@ dongle 首次上电无 Wi-Fi 凭证 → 自动开 SoftAP `BLE-Scan-XXXX`（密�
 
 1. 手机/电脑连这个热点
 2. 浏览器开 `http://192.168.4.1` → 固件下发的配网页 → 填家里 Wi-Fi 名/密码 → 设备重启连 STA
-3. 连上后 mDNS 注册为 `blescan-XXXX.local`（XXXX = MAC 后 4 位），此后 `/` 返回状态 JSON
+3. 连上后 mDNS 注册为 `blescan-XXXX.local`（XXXX = MAC 后 4 位），此后 `http://<ip>/` 是**设备控制页**
 4. 之后上位机和 dongle 在同一局域网即可，浏览器打开本地 `index.html` 选 WebSocket 填地址即可用
 
+> **连上 Wi-Fi 后热点就关了**（走的是纯 STA）。换路由器、改密码、把设备挪到别处时，用下面任一方式
+> 清凭证回热点，否则只能插 USB：
+>
+> - 上位机（WS 已连接）点连接栏里的 **「回退热点」** —— 走 WS 发 `AT+WIFI=0`，清凭证 + 重启
+> - 浏览器打开 `http://<ip>/` → 控制页 → **「忘记 Wi-Fi，回热点」**
+> - 命令行：`curl -X POST http://<ip>/api/forgetwifi`（还有 `/api/reboot`）
+> - 插 USB：串口发 `AT+WIFI=0`
+>
 > 也可用 AT 命令配网：`AT+WIFI=<ssid>,<pass>` 保存重启；`AT+WIFI=0` 清凭证回 AP；
 > `AT+WIFI?` 查询状态（`+WIFI:<sta>,<ip>,<ssid>,<mdns_url>`）。
 >
@@ -90,8 +99,13 @@ dongle 首次上电无 Wi-Fi 凭证 → 自动开 SoftAP `BLE-Scan-XXXX`（密�
 3. **开始扫描** —— 填时长（默认 10s，0 表示持续），点按钮
 4. 扫描期间每收到一条广播，下方表格追加/更新一行（按 MAC 去重，保留最新 RSSI 与最后一次见到的字段）
 5. 定时扫描结束，设备自动发 `+BLESCAN:done`，网页自动识别
-6. **点行展开详情**：广播包 AD Structure 解析、Service UUID 命名、厂商数据 Company ID 解析、
-   原始 hex、RSSI 折线图、过滤栏（按名称/MAC/RSSI/仅有名称/含 UUID）
+6. **点行展开详情**：列表在左、详情在右（窄屏 <1240px 自动改为上下排列；右栏粘在视口内，
+   列表很长时不用滚到底看）。详情含广播包 AD Structure 解析、Service UUID 命名、
+   厂商数据 Company ID 解析、原始 hex、RSSI 折线图、过滤栏（按名称/MAC/RSSI/仅有名称/含 UUID）
+7. **广播类型识别**：列表多一列「广播类型」，自动标出 **iBeacon** 与 **Eddystone**
+   （UID / URL / TLM / EID），详情里展开解出的字段 ——
+   iBeacon 的 UUID/Major/Minor/校准功率，Eddystone-UID 的 Namespace/Instance、
+   URL 的完整链接（含压缩后缀还原）、TLM 的电压/温度/广播计数/运行秒数、EID 的临时 ID
 7. **GATT Client**：详情面板底部点「连接此设备」→自动发现 service/characteristic/descriptor
    → 每个 characteristic 行带 Read / Write / WriteNoRsp / Subscribe 按钮，
    Notify 上来时实时显示在底部日志区，并把最新值回填到对应 chr 行
