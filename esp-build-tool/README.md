@@ -25,6 +25,7 @@ USB-Dongle/                     ← 工作区（自动扫描这一层）
 │   ├── net-term.bat            网络串口终端的 Windows 入口（双击/命令行，转发给 tcp-term.py）
 │   ├── tools/serial-monitor.py 串口监视（pyserial）
 │   ├── tools/tcp-term.py       裸 TCP 终端（零依赖，给 wifi-serial 的 :2333 用）
+│   ├── tools/check-ports-latency.mjs 回归检查：串口枚举不得阻塞事件循环
 │   ├── .venv/                  串口监视用的 Python 环境（缺 pyserial 时自动创建，已 gitignore）
 │   ├── start.sh                macOS / Linux 启动脚本
 │   ├── start.bat               Windows 启动脚本
@@ -216,11 +217,41 @@ ESP-IDF 工程：
 | `IDF_PATH` | 自动探测 | 指定 ESP-IDF 目录 |
 | `ESPMON_PYTHON` | 自动探测 | 指定跑 `tools/serial-monitor.py` 的解释器，**优先级最高**（需自带 pyserial） |
 | `MONITOR_NO_AUTOINSTALL` | 未设置 | 设为 `1` 时，缺 pyserial 只报错、不自动建 `.venv` |
+| `ESP_PORTS_SOURCE` | `auto` | 串口枚举来源：`auto`（先读注册表，失败退 arduino-cli）/ `registry` / `arduino-cli`。排查用 |
 
 例：临时换个工作区并开在 9000 端口
 
 ```bash
 ESP_WORKSPACE=/path/to/projects PORT=9000 ./start.sh
+```
+
+---
+
+## 串口枚举为什么会把页面卡死（已修）
+
+**现象**：点「刷新」或刚打开页面时，整个页面没有任何响应，点哪儿都不动 —— 浏览器那边看着就像卡死了。有时特别严重（十几秒），有时只是顿一下。
+
+**根因**：`/api/ports` 以前调的是 **`execFileSync`**（同步跑 `arduino-cli board list`）。Node 是单线程的，同步子进程会把**整个事件循环**按住，期间所有请求一起排队。实测（本机）：
+
+| 场景 | 修复前 | 修复后 |
+| --- | --- | --- |
+| 单次 `/api/ports` | 1800~2400 ms | ~130 ms（注册表）/ 兜底 arduino-cli ~2000 ms |
+| 枚举期间 `/api/env`（本该 240 ms） | **被拖到 2000 ms** | 612 ms，与枚举耗时无关 |
+| 同时点 3 次「刷新」 | 1.8 / 3.6 / **5.4 s** 完美串行 | 三个请求共用一次枚举，同时返回 |
+
+「有时特别严重」的来源：那句同步调用带着 `timeout: 20000`，一旦某个口被别的程序占着（比如此工具自己的串口监视），arduino-cli 探测该口会卡住，单次就能把服务端冻 20 秒。
+
+**修法**（`server.js`）：
+1. 枚举全改成异步 `execFile`，**绝不再用 `execFileSync`**；
+2. 同一时刻只允许一次枚举在飞（`portsInflight`），连点刷新共用结果；
+3. Windows 走注册表 `HKLM\HARDWARE\DEVICEMAP\SERIALCOMM` 快路径 —— arduino-cli 底层的 go-serial 也是读这个键，实测两者列出的串口完全一致，只是省掉了 CLI 启动开销。读不到时才退 arduino-cli（比如 `reg.exe` 被安全策略/杀软拦掉）；
+4. 每条路各自兜底：任一条抛异常只当「这条路没结果」，不会连带跳过下一条（踩过：注册表路一抛异常，兜底整段被跳过，返回空列表）；
+5. 页面侧：`loadPorts()` 不允许并发、按钮显示「读取中…」、失败要说出来（以前 `api()` 不检查 `ok`，服务端返回非 JSON 时抛异常被吞掉，页面静默停在旧状态）。
+
+**自查**：枚举超过 400 ms 时页面日志会打一行 `串口枚举 1800ms（来源 arduino-cli）` —— 正常情况走注册表只有一百多毫秒，看到这行就说明走了兜底或机器异常。也可以直接跑回归检查：
+
+```bash
+node tools/check-ports-latency.mjs     # 退出码 0 = 枚举没把事件循环挡住
 ```
 
 ---

@@ -40,7 +40,7 @@ const http = require('http');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { spawn, execFileSync } = require('child_process');
+const { spawn, execFile, execFileSync } = require('child_process');
 
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || '127.0.0.1';
@@ -407,19 +407,67 @@ function collectFirmware(dir) {
 // ==================================================================
 // 串口枚举
 // ==================================================================
-function listPorts() {
-  if (isWin()) {
-    // Windows 没有可靠的原生枚举，交给 arduino-cli（若可用）
-    if (!ARDUINO_CLI) return [];
+// ⚠️ 这里每个函数都**不能**用 execFileSync。
+//    曾经 Windows 走的是 `execFileSync(arduino-cli board list)`，它同步阻塞
+//    整个 Node 事件循环：实测本机单独调用就要 1.8~2.4s，期间 /api/env 这种
+//    本该 0.2s 返回的接口被拖到 2.0s，连点 3 次「刷新」变成 1.8/3.6/5.4s
+//    完美串行 —— 现象就是「网页点一下整个卡死」。
+//    （arduino-cli 还有个 timeout: 20000 的上限，一旦某个口被占用导致探测卡住，
+//     单次就能把服务端冻 20 秒，这就是「有时」特别严重的原因。）
+const REG_SERIALCOMM = 'HKLM\\HARDWARE\\DEVICEMAP\\SERIALCOMM';
+// COM2 要排在 COM10 前面，别用默认的字典序
+const portSort = (a, b) => a.localeCompare(b, undefined, { numeric: true });
+
+/** Windows：直接读注册表，arduino-cli 底层（go-serial）也是读这个键。
+ *  实测两者列出的串口完全一致（COM1/COM4），差别只在开销：
+ *  本机一次 System32 小进程约 130ms（几乎全是进程启动），arduino-cli 要 ~2s。
+ *  @returns {Promise<string[]|null>} null = 这条路走不通，交给调用方兜底 */
+function winPortsFromRegistry() {
+  return new Promise(resolve => {
     try {
-      const out = execFileSync(ARDUINO_CLI, ['board', 'list', '--format', 'json'],
-        { encoding: 'utf8', timeout: 20000 });
-      const j = JSON.parse(out.replace(/^\uFEFF/, ''));
-      return (j.detected_ports || [])
-        .filter(p => p.port && p.port.address)
-        .map(p => p.port.address);
-    } catch (_) { return []; }
-  }
+      execFile('reg', ['query', REG_SERIALCOMM],
+        { encoding: 'utf8', timeout: 5000, windowsHide: true },
+        (err, stdout) => {
+          if (err || !stdout) return resolve(null);
+          const out = [];
+          for (const line of stdout.split(/\r?\n/)) {
+            const m = line.match(/\sREG_SZ\s+(\S+)\s*$/);  // "\Device\Serial0  REG_SZ  COM1"
+            if (m) out.push(m[1]);
+          }
+          resolve(out.length ? out.sort(portSort) : null); // 空也当失败：交回 arduino-cli
+        });
+    } catch (_) {
+      // spawn 本身同步抛的情况（比如 reg.exe 被安全策略/杀软拦掉）。
+      // 必须在这里吞掉并 resolve(null)，否则 Promise 变 reject，
+      // 会把调用方的「兜底走 arduino-cli」整段跳过 —— 实测踩过。
+      resolve(null);
+    }
+  });
+}
+
+/** 兜底：arduino-cli（注册表读不到时才用，异步不阻塞） */
+function winPortsFromArduinoCli() {
+  return new Promise(resolve => {
+    if (!ARDUINO_CLI) return resolve(null);
+    try {
+      execFile(ARDUINO_CLI, ['board', 'list', '--format', 'json'],
+        { encoding: 'utf8', timeout: 8000, windowsHide: true, maxBuffer: 4 << 20 },
+        (err, stdout) => {
+          if (err || !stdout) return resolve(null);
+          try {
+            const j = JSON.parse(String(stdout).replace(/^\uFEFF/, ''));
+            resolve((j.detected_ports || [])
+              .filter(p => p.port && p.port.address)
+              .map(p => p.port.address)
+              .sort(portSort));
+          } catch (_) { resolve(null); }
+        });
+    } catch (_) { resolve(null); }
+  });
+}
+
+/** *nix：一次 readdir，本身就很快，没必要异步 */
+function listPorts() {
   const res = [];
   let files;
   try { files = fs.readdirSync('/dev'); } catch (_) { return res; }
@@ -427,6 +475,35 @@ function listPorts() {
   const re = /^(cu\.usbserial[\w.-]*|cu\.usbmodem[\w.-]*|cu\.SLAB[\w.-]*|ttyUSB\d+|ttyACM\d+|ttyAMA\d+)$/;
   for (const f of files) if (re.test(f)) res.push('/dev/' + f);
   return res.sort();
+}
+
+// 同一个时刻只允许有一次枚举在飞：连点「刷新」或页面多次请求时共用同一次结果，
+// 否则 N 次点击 = N × 2s 的排队。
+// 来源可用 ESP_PORTS_SOURCE 覆盖：auto(默认) | registry | arduino-cli。
+// registry 是快路径（~130ms），某些被锁死的机器上 reg.exe 可能不可用（实测沙箱
+// 里就会被安全策略拦掉）—— 那时 auto 会自动落到 arduino-cli（慢但不阻塞），
+// 所以两条路都必须留着。
+let portsInflight = null;
+function listPortsAsync() {
+  if (portsInflight) return portsInflight;
+  const t0 = Date.now();
+  const want = (process.env.ESP_PORTS_SOURCE || 'auto').toLowerCase();
+  portsInflight = (async () => {
+    if (!isWin()) return { ports: listPorts(), source: 'dev', ms: Date.now() - t0 };
+    // 每条路各自兜底：任一条抛异常都只当「这条路没结果」，不能连带跳过下一条
+    let ports = null, source = '';
+    if (want !== 'arduino-cli') {
+      try { ports = await winPortsFromRegistry(); } catch (_) { ports = null; }
+      source = 'registry';
+    }
+    if (!ports && want !== 'registry') {
+      try { ports = await winPortsFromArduinoCli(); } catch (_) { ports = null; }
+      source = 'arduino-cli';
+    }
+    return { ports: ports || [], source: ports ? source : 'none', ms: Date.now() - t0 };
+  })().catch(() => ({ ports: [], source: 'error', ms: Date.now() - t0 }))
+     .finally(() => { portsInflight = null; });
+  return portsInflight;
 }
 
 // ==================================================================
@@ -763,7 +840,11 @@ const server = http.createServer((req, res) => {
     if (p === '/api/env') return sendJSON(res, envInfo());
 
     // ---- 串口列表 ----
-    if (p === '/api/ports') return sendJSON(res, { ports: listPorts() });
+    // 异步：枚举会起子进程（Windows 读注册表 / 兜底跑 arduino-cli），
+    // 同步版本会把整个事件循环冻住，见 listPortsAsync 上面的注释。
+    if (p === '/api/ports') {
+      return listPortsAsync().then(r => sendJSON(res, r));
+    }
 
     // ---- 固件产物 ----
     if (p === '/api/firmware') {

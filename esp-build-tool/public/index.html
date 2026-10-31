@@ -77,7 +77,7 @@
     <div class="row">
       <label>串口</label>
       <select id="port"></select>
-      <button class="sec sm" onclick="loadPorts()">刷新</button>
+      <button class="sec sm" id="portBtn" onclick="loadPorts()">刷新</button>
       <label style="min-width:52px">波特率</label>
       <input id="baud" value="115200" style="width:96px">
     </div>
@@ -311,24 +311,48 @@ async function loadProjects() {
   onProject();
 }
 
+// 串口枚举曾经是同步阻塞的（服务端 execFileSync 跑 arduino-cli，单次 2s 起，
+// 最坏 20s）。那期间整个服务端不响应，连点几次「刷新」就是一个接一个地排队，
+// 页面看着就是卡死。服务端已改成异步 + 并发去重 + 走注册表快路径；
+// 这里再加三道防线：不允许并发请求、按钮给出「读取中」反馈、失败要说出来。
+var portsLoading = false;
+
 async function loadPorts() {
-  var r = await api('/api/ports');
-  var sel = $('port');
-  var keep = sel.value || localStorage.getItem('port');
-  sel.innerHTML = '';
-  var ports = r.ports || [];
-  if (!ports.length) {
-    sel.innerHTML = '<option value="">（未发现串口）</option>';
-  } else {
-    ports.forEach(function (p) {
-      var o = document.createElement('option');
-      o.value = p; o.textContent = p;
-      sel.appendChild(o);
-    });
-    if (keep && ports.indexOf(keep) >= 0) sel.value = keep;
-    localStorage.setItem('port', sel.value);
+  if (portsLoading) return;               // 连点不再排队
+  var btn = $('portBtn'), sel = $('port');
+  var label = btn ? btn.textContent : '';
+  portsLoading = true;
+  if (btn) { btn.disabled = true; btn.textContent = '读取中…'; }
+  try {
+    var r = await api('/api/ports');
+    var keep = sel.value || localStorage.getItem('port');
+    sel.innerHTML = '';
+    var ports = r.ports || [];
+    if (!ports.length) {
+      sel.innerHTML = '<option value="">（未发现串口）</option>';
+    } else {
+      ports.forEach(function (p) {
+        var o = document.createElement('option');
+        o.value = p; o.textContent = p;
+        sel.appendChild(o);
+      });
+      if (keep && ports.indexOf(keep) >= 0) sel.value = keep;
+      localStorage.setItem('port', sel.value);
+    }
+    sel.onchange = function () { localStorage.setItem('port', sel.value); };
+    // 正常走注册表只要几十毫秒；超过 400ms 说明走了兜底路径或磁盘/子进程异常，
+    // 留一行日志，下次"卡"的时候能直接看出是哪一步慢。
+    if (r.ms > 400) {
+      logLine('sys', '串口枚举 ' + r.ms + 'ms（来源 ' + (r.source || '?') + '）');
+    }
+  } catch (e) {
+    sel.innerHTML = '<option value="">（读取失败）</option>';
+    logLine('err', '读取串口列表失败：' + e.message
+      + '（改了 server.js 之后要重启工具才生效）');
+  } finally {
+    portsLoading = false;
+    if (btn) { btn.disabled = false; btn.textContent = label; }
   }
-  sel.onchange = function () { localStorage.setItem('port', sel.value); };
 }
 
 function onProject() {
