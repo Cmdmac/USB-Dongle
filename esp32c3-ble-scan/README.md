@@ -237,7 +237,11 @@ dongle 联网后（AP 模式 IP `192.168.4.1`；STA 模式用 mDNS `blescan-XXXX
 | `GET`  | `/api/status` | 完整状态（含固件版本） | `application/json` |
 | `POST` | `/api/wifi` | 提交 Wi-Fi 凭证，保存后重启连 STA。表单字段：`ssid`（≤32）、`password`（≤64） | `{"ok":true}` 或 `400 bad ssid/pass` |
 | `POST` | `/api/forgetwifi` | 清除已存凭证，重启回 AP 热点 | `{"ok":true}` |
+| `POST` | `/api/reboot` | 重启设备 | `{"ok":true,"reboot":true}` |
 | *      | *    | 其他路径 | `404 not found` |
+
+> HTTP 只管**设备管理**（配网 / 状态 / 重启），不涉及 BLE 业务。
+> BLE 扫描 / GATT 等业务走 **WebSocket :81** 发 AT 命令、收 URC 流（见下节）。
 
 `/api/status` 返回示例（STA 已联网）：
 
@@ -266,7 +270,29 @@ dongle 联网后（AP 模式 IP `192.168.4.1`；STA 模式用 mDNS `blescan-XXXX
 > `POST /api/wifi` 和 `POST /api/forgetwifi` 都会在返回后约 600ms `ESP.restart()`，
 > 客户端拿到响应后不必等连接关闭，直接重连即可。
 
-### WebSocket `:81`
+### WebSocket `:81` —— 业务数据通道
+
+WS 是**双向字节流**，等同于把 USB-CDC 的 AT 通道搬到网络上。客户端发 AT 命令（带 `\r\n`）、
+收 AT 输出（`OK` / `ERROR` / `+BLESCAN:...` / `+BLEGATTC_*` 等 URC），和 USB 直连完全等价。
+
+**典型业务流程**（客户端视角）：
+
+```
+1. （可选）GET /api/status        → 确认设备在线 + 拿 mDNS/IP
+2. WebSocket 连 ws://<host>:81/
+3. 发 "AT+BLEINIT=1\r\n"          ← 收 "OK\r\n"
+4. 发 "AT+BLESCAN=1,10\r\n"       ← 收 "OK\r\n"
+5. 扫描期间持续收：
+   "+BLESCAN:0,AA:BB:CC:DD:EE:FF,-67,\"MyDev\",\"020106...\"\r\n"
+   "+BLESCAN:1,11:22:33:44:55:66,-78,\"\"\r\n"
+   ...
+   "+BLESCAN:done\r\n"            ← 10 秒到期
+6. 客户端按 \n 切行、解析 +BLESCAN: 前缀，按 MAC 去重展示
+```
+
+> 之所以不把 BLE 业务做成 HTTP REST（如 `GET /api/scan`），是因为扫描结果是
+> **持续推送的 URC 流**（每几百毫秒一条广播），HTTP 请求-响应模式不适合。
+> WS 字节流 + AT 命令体系正好对齐 USB-CDC 的体验，客户端解析逻辑可复用。
 
 | 项 | 说明 |
 | --- | --- |
