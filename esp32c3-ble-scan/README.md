@@ -128,6 +128,9 @@ dongle 首次上电无 Wi-Fi 凭证 → 自动开 SoftAP `BLE-Scan-XXXX`（密�
 | `AT+HELP` | 打印命令表 |
 | `AT+SYSLOG=<0\|1>` / `AT+SYSLOG?` | UART0 日志开关 |
 | `AT+LOG?` | 把 RAM 日志环从 AT 口倒出来 |
+| `AT+WIFI?` | 查询 Wi-Fi 状态（`+WIFI:<sta>,<ip>,<ssid>,<mdns_url>`） |
+| `AT+WIFI=<ssid>,<pass>` | 配网：保存后重启连 STA（`pass` 可空） |
+| `AT+WIFI=0` | 清除凭证，重启回 AP 热点 `BLE-Scan-XXXX` |
 
 ### BLE 扫描
 
@@ -219,6 +222,72 @@ GATT 连接状态变化：
 +BLEGATTC_READ:<handle>,<hex>     AT+BLEGATTC_READ 的回包
 +BLEGATTC_NOTIF:<handle>,<hex>    notify
 +BLEGATTC_IND:<handle>,<hex>      indicate
+```
+
+## HTTP / WebSocket 接口（局域网通道）
+
+dongle 联网后（AP 模式 IP `192.168.4.1`；STA 模式用 mDNS `blescan-XXXX.local` 或路由器分配的 IP），
+在 80 / 81 两个端口提供服务。所有接口均无鉴权（局域网内直连，不要暴露到公网）。
+
+### HTTP `:80`
+
+| 方法 | 路径 | 作用 | 返回 |
+| --- | --- | --- | --- |
+| `GET`  | `/` | **根路径**：AP 模式下发配网页 HTML；STA 模式返回精简状态 JSON | `text/html` 或 `application/json` |
+| `GET`  | `/api/status` | 完整状态（含固件版本） | `application/json` |
+| `POST` | `/api/wifi` | 提交 Wi-Fi 凭证，保存后重启连 STA。表单字段：`ssid`（≤32）、`password`（≤64） | `{"ok":true}` 或 `400 bad ssid/pass` |
+| `POST` | `/api/forgetwifi` | 清除已存凭证，重启回 AP 热点 | `{"ok":true}` |
+| *      | *    | 其他路径 | `404 not found` |
+
+`/api/status` 返回示例（STA 已联网）：
+
+```json
+{
+  "sta": true,
+  "ip": "192.168.1.42",
+  "ssid": "MyHome",
+  "mdns": "blescan-a1b2.local",
+  "fw": "ble-scan 1.0"
+}
+```
+
+`/api/status` 返回示例（AP 配网中）：
+
+```json
+{
+  "sta": false,
+  "ip": "192.168.4.1",
+  "ssid": "",
+  "mdns": "",
+  "fw": "ble-scan 1.0"
+}
+```
+
+> `POST /api/wifi` 和 `POST /api/forgetwifi` 都会在返回后约 600ms `ESP.restart()`，
+> 客户端拿到响应后不必等连接关闭，直接重连即可。
+
+### WebSocket `:81`
+
+| 项 | 说明 |
+| --- | --- |
+| URL | `ws://<dongle>:81/`（路径任意，库不校验） |
+| 子协议 | 无 |
+| 帧类型 | **文本帧 / 二进制帧均可**，按字节原样喂 AT 解析器 |
+| 方向：C→S | 上位机发的 AT 命令字节（含 `\r\n`），等同于往 USB-CDC 写 |
+| 方向：S→C | 固件 `MultiStream` 把所有 AT 输出（`OK` / `ERROR` / `+BLESCAN:...` / `+BLEGATTC_*` 等）`broadcastBIN` 给**所有**已连客户端 |
+| 多客户端 | 支持；每个客户端都能看到完整 AT 流（包括别的客户端发的命令产生的响应） |
+| 连接/断开 | 仅在 UART0 日志记一行 `[ws] client #N connected/gone`，不影响 AT 流 |
+
+> 多客户端场景：可同时开多个浏览器页面 / 用 `wscat` 抓流，都能看到同一份 AT 输出。
+> 命令去重 / 冲突由用户自己把握，固件不限制谁能在哪条通道发命令。
+
+`wscat` 抓流示例：
+
+```bash
+npx wscat -c ws://blescan-a1b2.local:81
+> AT+BLEINIT=1
+< OK
+< +BLESCAN:0,AA:BB:CC:DD:EE:FF,-67,"MyBLEDevice","0201060AFF..."
 ```
 
 ## 一次典型会话
